@@ -1,0 +1,201 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  netorch_fixlet.bes — BigFix 11 Fixlet for netorch network job submission
+  Import into BigFix Console: File > Import > select this file
+  Adjust the NETORCH_TOKEN environment variable or set it in netorch.toml.
+-->
+<BES xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+     xsi:noNamespaceSchemaLocation="BES.xsd">
+  <Fixlet>
+    <Title>netorch — Submit Network Configuration Job</Title>
+
+    <Description><![CDATA[
+<h3>netorch Network Configuration Orchestrator</h3>
+<p>
+  Submit an audit or remediation job to the <strong>netorch</strong> REST API
+  running on this relay machine (port 64321). The job fans out over SSH to the
+  targeted network devices in parallel and writes a structured JSON result log.
+</p>
+
+<h4>Field reference</h4>
+<table border="1" cellpadding="4" cellspacing="0">
+  <tr><th>Field</th><th>Description</th></tr>
+  <tr>
+    <td><b>mode</b></td>
+    <td>
+      <code>audit</code> — read-only show commands; never commits changes.<br/>
+      <code>remediate</code> — applies config commands (requires remediation_commands).
+    </td>
+  </tr>
+  <tr>
+    <td><b>devices</b></td>
+    <td>
+      One entry per line. Each entry is either:<br/>
+      &bull; an IP address or hostname (e.g. <code>192.168.1.10</code>)<br/>
+      &bull; an inventory group name (e.g. <code>core_switches</code>) —
+        expanded to all member hosts at submission time.
+    </td>
+  </tr>
+  <tr>
+    <td><b>commands</b></td>
+    <td>
+      One command per line. Run on every target device (e.g.
+      <code>show version</code>, <code>hostname</code>).
+    </td>
+  </tr>
+  <tr>
+    <td><b>remediation_commands</b></td>
+    <td>
+      <em>Only evaluated when mode = remediate.</em> One config command per
+      line (e.g. <code>ntp server 10.0.0.1</code>). Leave blank for audit jobs.
+    </td>
+  </tr>
+  <tr>
+    <td><b>config_file</b></td>
+    <td>
+      Optional. Absolute path to a file already staged on this relay by a
+      BigFix prefetch step (e.g. firmware image). The SSH worker transfers it
+      to each device before running commands. Leave blank if unused.
+    </td>
+  </tr>
+</table>
+
+<h4>Exit-code contract</h4>
+<table border="1" cellpadding="4" cellspacing="0">
+  <tr><th>netorch job status</th><th>Action result</th></tr>
+  <tr><td>completed</td><td>Fixed / Completed (exit 0)</td></tr>
+  <tr><td>partial_failure</td><td>Fixed / Completed (exit 0) — inspect result log</td></tr>
+  <tr><td>failed</td><td>Failed (exit 1)</td></tr>
+  <tr><td>API unreachable / timeout</td><td>Failed (exit 1)</td></tr>
+</table>
+
+<p>
+  Result logs are saved on the relay under
+  <code>/var/netorch/results/&lt;job_id&gt;.json</code>.
+</p>
+    ]]></Description>
+
+    <!-- ===================================================================
+         Relevance: applicable to Linux relay machines only that have the
+         trigger script deployed.
+    =================================================================== -->
+    <Relevance>unix of operating system</Relevance>
+    <Relevance>name of operating system as lowercase contains "linux"</Relevance>
+    <Relevance>exists file "/opt/netorch/scripts/bigfix_trigger.sh"</Relevance>
+
+    <Category>Network Configuration</Category>
+    <Source>Internal</Source>
+    <SourceID></SourceID>
+    <SourceSeverity></SourceSeverity>
+    <SourceReleaseDate>2026-04-06</SourceReleaseDate>
+    <Domain>BESC</Domain>
+
+    <DefaultAction ID="Action1">
+      <Description>
+        <PreLink>Click </PreLink>
+        <Link>here</Link>
+        <PostLink> to submit a netorch job to the network orchestrator.</PostLink>
+      </Description>
+
+      <!-- =================================================================
+           Action script — runs on the relay (the BigFix client machine).
+           BigFix substitutes {parameter "..." of action} before execution.
+           Flags for optional parameters are only passed when non-empty so
+           that bigfix_trigger.sh validation logic is not tripped by blanks.
+      ================================================================== -->
+      <ActionScript MIMEType="application/x-sh"><![CDATA[#!/bin/bash
+set -euo pipefail
+
+# --------------------------------------------------------------------------
+# Capture form parameters (BigFix substitutes these before execution).
+# Multiline parameters are joined with literal \n so they survive as a
+# single shell argument; bigfix_trigger.sh expands them back to newlines.
+# --------------------------------------------------------------------------
+MODE="{parameter "mode" of action}"
+DEVICES=$(echo "{parameter "devices" of action}" | tr '\n' '\\n' | sed 's/\\n$//')
+COMMANDS=$(echo "{parameter "commands" of action}" | tr '\n' '\\n' | sed 's/\\n$//')
+REM_CMDS=$(echo "{parameter "remediation_commands" of action}" | tr '\n' '\\n' | sed 's/\\n$//')
+CFG_FILE="{parameter "config_file" of action}"
+
+# --------------------------------------------------------------------------
+# Build argument array; optional flags omitted when blank
+# --------------------------------------------------------------------------
+ARGS=(
+  --mode     "$MODE"
+  --devices  "$DEVICES"
+  --commands "$COMMANDS"
+)
+
+if [ -n "$REM_CMDS" ]; then
+  ARGS+=(--remediation-commands "$REM_CMDS")
+fi
+
+if [ -n "$CFG_FILE" ]; then
+  ARGS+=(--config-file "$CFG_FILE")
+fi
+
+# --------------------------------------------------------------------------
+# Delegate to netorch trigger script
+# --------------------------------------------------------------------------
+exec /opt/netorch/scripts/bigfix_trigger.sh "${ARGS[@]}"
+]]></ActionScript>
+
+      <!-- Exit code 0 → Fixed / Completed in BigFix -->
+      <SuccessCriteria Option="ExitCode">
+        <ExitCode>0</ExitCode>
+      </SuccessCriteria>
+
+      <!-- =================================================================
+           Operator form — displayed in the Take Action dialog.
+           The <Condition> element on remediation_commands hides that field
+           unless mode = "remediate" (supported in BigFix 9.5+ / BES 11).
+           If your console version does not render it conditionally, the
+           field is shown but ignored by the script when left blank.
+      ================================================================== -->
+      <Parameters>
+
+        <Parameter>
+          <Name>mode</Name>
+          <Description><![CDATA[Job mode — <b>audit</b> (read-only) or <b>remediate</b> (applies config changes)]]></Description>
+          <DefaultValue>audit</DefaultValue>
+          <Type>Dropdown</Type>
+          <Choices>
+            <Choice>audit</Choice>
+            <Choice>remediate</Choice>
+          </Choices>
+        </Parameter>
+
+        <Parameter>
+          <Name>devices</Name>
+          <Description><![CDATA[Target devices or group names — one IP address, hostname, or inventory group name per line]]></Description>
+          <DefaultValue></DefaultValue>
+          <Type>Multiline</Type>
+        </Parameter>
+
+        <Parameter>
+          <Name>commands</Name>
+          <Description><![CDATA[Commands to run on each device — one per line (e.g. <code>show version</code>, <code>hostname</code>)]]></Description>
+          <DefaultValue></DefaultValue>
+          <Type>Multiline</Type>
+        </Parameter>
+
+        <Parameter>
+          <Name>remediation_commands</Name>
+          <Description><![CDATA[Remediation / config commands — one per line (e.g. <code>ntp server 10.0.0.1</code>). <b>Only used when mode = remediate.</b> Leave blank for audit jobs.]]></Description>
+          <DefaultValue></DefaultValue>
+          <Type>Multiline</Type>
+          <!-- Hide this field when mode is not "remediate" (BigFix 9.5+ / BES 11) -->
+          <Condition><![CDATA[{parameter "mode" of action = "remediate"}]]></Condition>
+        </Parameter>
+
+        <Parameter>
+          <Name>config_file</Name>
+          <Description><![CDATA[Config file path on this relay (optional) — absolute path to a file staged by BigFix prefetch, e.g. <code>/var/cache/BES/prefetch/firmware.bin</code>. Leave blank if not transferring a file.]]></Description>
+          <DefaultValue></DefaultValue>
+          <Type>String</Type>
+        </Parameter>
+
+      </Parameters>
+    </DefaultAction>
+  </Fixlet>
+</BES>

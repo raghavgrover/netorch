@@ -1,0 +1,46 @@
+# =============================================================================
+# inventory.ini — netorch device inventory and credentials
+#
+# Format: Ansible-compatible INI
+#
+# Each host line:
+#   <ip_or_hostname>  platform=<p>  username=<u>  password=<pw>  [enable_secret=<es>]  [port=<n>]
+#
+# Supported platforms:
+#   cisco_ios   — Cisco IOS / IOS-XE (switches, routers)
+#   cisco_xe    — Cisco IOS-XE (alias for cisco_ios)
+#   cisco_xr    — Cisco IOS-XR (core routers, requires commit)
+#   linux       — Linux OS (Ubuntu, RHEL, Debian, etc.)
+#
+# Lookup order in a job:
+#   1. Device matched by IP/hostname directly
+#   2. If not found, group name from the job payload is used as fallback
+#   3. Error if neither found
+#
+# SECURITY: chmod 640 /opt/netorch/inventory.ini
+#           chown root:netorch /opt/netorch/inventory.ini
+# =============================================================================
+
+# --- Global defaults (applied to all hosts unless overridden) ---
+[all:vars]
+port=22
+
+# --- Cisco IOS / IOS-XE switches ---
+[core_switches]
+192.168.1.10  platform=cisco_ios  username=netaudit  password=CHANGE_ME  enable_secret=CHANGE_ME
+192.168.1.11  platform=cisco_ios  username=netaudit  password=CHANGE_ME  enable_secret=CHANGE_ME
+192.168.1.12  platform=cisco_ios  username=netaudit  password=CHANGE_ME  enable_secret=CHANGE_ME
+
+# --- Cisco IOS-XR core routers ---
+[core_routers]
+10.0.0.1  platform=cisco_xr  username=rtruser  password=CHANGE_ME
+10.0.0.2  platform=cisco_xr  username=rtruser  password=CHANGE_ME
+
+# --- Linux servers ---
+[linux_servers]
+10.0.0.50  platform=linux  username=sysadmin  password=CHANGE_ME  port=22
+10.0.0.51  platform=linux  username=sysadmin  password=CHANGE_ME  port=22
+
+# --- Firewalls (IOS-XE based) ---
+[firewalls]
+172.16.0.1  platform=cisco_ios  username=fwadmin  password=CHANGE_ME  enable_secret=CHANGE_ME  port=22

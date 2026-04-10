@@ -1,0 +1,24 @@
+{
+  "_comment": "Remediation targeting an entire group — all hosts under [core_switches] are updated",
+
+  "job_id": "rem-example-001",
+  "mode": "remediate",
+  "devices": [
+    {
+      "group": "core_switches"
+    }
+  ],
+  "commands": [
+    "show running-config | include ntp"
+  ],
+  "remediation_commands": [
+    "ntp server 10.0.0.1",
+    "ntp server 10.0.0.2",
+    "logging host 10.0.0.50"
+  ],
+  "options": {
+    "timeout_per_device": 30,
+    "max_workers": 20,
+    "backup_config_before_change": true
+  }
+}

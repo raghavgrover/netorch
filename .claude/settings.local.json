@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(bash -n /opt/netorch/scripts/bigfix_trigger.sh)",
+      "Bash(find . -name \"*.pyc\" -delete)",
+      "Bash(find . -name \"__pycache__\" -type d -exec rm -rf {} +)",
+      "Bash(PYTHONPATH=. venv/bin/pytest tests/ -v)",
+      "Bash(PYTHONPATH=. venv/bin/pytest tests/test_file_transfer.py::test_transfer_failure_captured_per_device_job_continues tests/test_jobs.py::test_nonexistent_group_fails_gracefully tests/test_jobs.py::test_mixed_forms_in_single_job tests/test_ios_xr_dryrun.py::test_dryrun_error_aborts_and_raises -v --tb=short)",
+      "Bash(PYTHONPATH=. venv/bin/pytest tests/test_logs.py -v)",
+      "Bash(PYTHONPATH=. venv/bin/pytest tests/ -v -p no:randomly)",
+      "Bash(find /opt/netorch -name \"*.pyc\" -delete)",
+      "Bash(find /opt/netorch -name \"__pycache__\" -type d -exec rm -rf {} +)",
+      "Bash(sudo systemctl:*)",
+      "Bash(curl:*)"
+    ]
+  }
+}

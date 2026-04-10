@@ -1,0 +1,57 @@
+# =============================================================================
+# netorch .gitignore
+# Keeps secrets, credentials, and runtime artifacts off GitHub
+# =============================================================================
+
+# --- Credentials & secrets (NEVER commit these) ---
+inventory.ini
+netorch.toml
+*.toml
+*.ini
+*.env
+.env*
+secrets/
+creds/
+
+# --- Logs ---
+logs/
+*.log
+*.log.*
+
+# --- Job persistence / runtime state ---
+jobs/
+job_store*.json
+*.json.bak
+
+# --- Python bytecode ---
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+
+# --- Virtual environment ---
+venv/
+.venv/
+env/
+ENV/
+
+# --- Pytest / test artifacts ---
+.pytest_cache/
+.coverage
+htmlcov/
+*.xml
+
+# --- Editor / OS noise ---
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# --- Distribution / build ---
+dist/
+build/
+*.egg-info/

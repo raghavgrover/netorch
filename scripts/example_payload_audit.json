@@ -1,0 +1,32 @@
+{
+  "_comment": "Three ways to specify devices — mix and match in the same job",
+
+  "job_id": "audit-example-001",
+  "mode": "audit",
+  "devices": [
+    {
+      "_comment_1": "Form 1: host only — looked up directly in inventory by IP",
+      "host": "192.168.1.10"
+    },
+    {
+      "_comment_2": "Form 2: host + group — host is the SSH target, group is credential fallback",
+      "host": "192.168.1.11",
+      "group": "core_switches"
+    },
+    {
+      "_comment_3": "Form 3: group only — ALL hosts under [core_routers] in inventory.ini are targeted",
+      "group": "core_routers"
+    }
+  ],
+  "commands": [
+    "show version",
+    "show running-config | include ntp",
+    "show running-config | include logging",
+    "show running-config | include banner"
+  ],
+  "options": {
+    "timeout_per_device": 30,
+    "max_workers": 20,
+    "backup_config_before_change": false
+  }
+}
