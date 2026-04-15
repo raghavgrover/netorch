@@ -44,7 +44,7 @@ usage() {
     cat >&2 <<EOF
 Usage: $0 --mode audit|remediate --devices DEVICES --commands COMMANDS
           [--remediation-commands CMDS] [--config-file PATH]
-          [--file-transfers "lpath1:rpath1:cmd1,cmd2|lpath2:rpath2:"]
+          [--file-transfers "lpath1:rpath1:post_cmd1;;post_cmd2|lpath2:rpath2:"]
 
   --mode                  audit or remediate (required)
   --devices               Newline-separated list of hostnames, IPs, or group names (required)
@@ -52,7 +52,7 @@ Usage: $0 --mode audit|remediate --devices DEVICES --commands COMMANDS
   --remediation-commands  Newline-separated config commands (required when mode=remediate)
   --config-file           Path to a single file staged on the relay (legacy; prefer --file-transfers)
   --file-transfers        Pipe-delimited file transfer entries.
-                          Each entry: local_path:remote_path:post_cmd1,post_cmd2
+                          Each entry: local_path:remote_path:post_cmd1;;post_cmd2
                           (post-transfer commands are optional; omit or leave blank)
 EOF
     exit 1
@@ -172,7 +172,7 @@ if file_transfers_raw:
         lp      = parts[0].strip() if len(parts) > 0 else ''
         rp      = parts[1].strip() if len(parts) > 1 else ''
         cmds_s  = parts[2].strip() if len(parts) > 2 else ''
-        cmds    = [c.strip() for c in cmds_s.split(',') if c.strip()] or None
+        cmds    = [c.strip() for c in cmds_s.split(';;') if c.strip()] or None
         if lp:
             transfers.append({
                 "local_path":             lp,

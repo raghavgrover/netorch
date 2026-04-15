@@ -209,7 +209,30 @@ Supported platforms: `cisco_ios`, `cisco_xe`, `cisco_xr`, `linux`
 - Job cancellation via DELETE /jobs/{id}
 - Rate limiting (slowapi)
 - Structured JSON logging to journald
-- Full test suite (53 tests, all passing with mock drivers)
+- Full test suite (73+ tests, all passing with mock drivers)
+- `drivers/linux.py` `run_config_commands` raises `RuntimeError` on non-zero
+  exit code — failed commands now surface in `CommandResult.error` instead of
+  being silently embedded in output text
+- Device status remains `"success"` when SSH connected but a command failed —
+  failure is visible per-command in job detail (`GET /jobs/{id}/detail`)
+- **Inventory directory support** — `inventory.path` in `netorch.toml` can
+  point at either a single `.ini` file (backward compatible) or a directory:
+  - All `*.ini` files in the directory are loaded alphabetically and merged
+  - Duplicate host across files: warning logged, last file alphabetically wins
+  - Duplicate group across files: warning logged, last file's host list replaces
+    the previous definition
+  - Parse error in one file: warning logged, that file is skipped, others load
+  - Empty directory (no `*.ini` files): raises `FileNotFoundError`
+  - `GET /inventory/sources` returns per-file host/group counts plus
+    `total_hosts` and `total_groups` for the merged inventory
+  - Production path: `netorch.toml` `inventory.path = "/opt/netorch/inventory"`
+    with device credentials in `inventory/hosts.ini`
+- Always clear `__pycache__` after editing driver files:
+  ```
+  find /opt/netorch -name "*.pyc" -delete
+  find /opt/netorch -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null; true
+  sudo systemctl restart netorch
+  ```
 
 ---
 
@@ -227,7 +250,12 @@ Supported platforms: `cisco_ios`, `cisco_xe`, `cisco_xr`, `linux`
 - `api/routes/jobs.py`: validates all `local_path` values exist on relay
   before queuing; returns 400 if any missing
 - `scripts/bigfix_trigger.sh`: `--file-transfers` arg added; pipe-delimited
-  format: `"local:remote:cmd1,cmd2|local2:remote2:"`
+  format: `"local:remote:cmd1;;cmd2|local2:remote2:cmd"`
+- Post-transfer command separator is `;;` (double semicolon) — changed from
+  comma to avoid conflicts with commands that contain commas
+- `scripts/verify_sha1.sh`: helper script used by BigFix Action1 to verify
+  file integrity on the relay before transfer; extracted from inline awk to
+  avoid BigFix relevance substitution issues with curly braces
 - `commands` field is now optional in `JobSubmitRequest` — jobs with only
   `file_transfers` and no commands are valid
 - Validation moved to application layer: 400 returned if both `commands`

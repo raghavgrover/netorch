@@ -102,13 +102,41 @@ def _attempt(
             ts = _now_iso()
             try:
                 rem_output = driver.run_config_commands(remediation_commands)
-                command_results.append(CommandResult(
-                    command="[remediation]", output=rem_output, timestamp=ts,
-                ))
+                # Parse combined output back into per-command sections.
+                # run_config_commands formats each section as "# <cmd>\n<output>".
+                # Split on lines that start with "# " to recover per-command output.
+                sections: list[str] = []
+                current: list[str] = []
+                for line in rem_output.splitlines():
+                    if line.startswith("# ") and current:
+                        sections.append("\n".join(current))
+                        current = [line]
+                    else:
+                        current.append(line)
+                if current:
+                    sections.append("\n".join(current))
+                # Map each section back to its original command by index.
+                # Each section starts with "# <cmd>" as the first line;
+                # the output is everything after that line.
+                for i, cmd in enumerate(remediation_commands):
+                    if i < len(sections):
+                        body = "\n".join(sections[i].splitlines()[1:]).strip()
+                    else:
+                        body = ""
+                    command_results.append(CommandResult(
+                        command=f"[remediate] {cmd}",
+                        output=body,
+                        timestamp=ts,
+                    ))
             except Exception as e:
-                command_results.append(CommandResult(
-                    command="[remediation]", output="", timestamp=ts, error=str(e),
-                ))
+                err_msg = str(e)
+                for cmd in remediation_commands:
+                    command_results.append(CommandResult(
+                        command=f"[remediate] {cmd}",
+                        output="",
+                        timestamp=ts,
+                        error=err_msg,
+                    ))
 
     return command_results, config_backup
 

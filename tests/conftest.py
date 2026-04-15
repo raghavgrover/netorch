@@ -29,13 +29,15 @@ from pathlib import Path
 
 _tmp_dir  = tempfile.mkdtemp(prefix="netorch_test_")
 _log_dir  = os.path.join(_tmp_dir, "logs", "jobs")
-_inv_file = os.path.join(_tmp_dir, "inventory.ini")
+_inv_dir  = os.path.join(_tmp_dir, "inventory")
 _cfg_file = os.path.join(_tmp_dir, "netorch.toml")
 
 os.makedirs(_log_dir, exist_ok=True)
+os.makedirs(_inv_dir, exist_ok=True)
 
-Path(_inv_file).write_text("""\
-# Test inventory — mock devices only, no real SSH
+# mock_network.ini — network mock devices
+Path(os.path.join(_inv_dir, "mock_network.ini")).write_text("""\
+# Test inventory — network mock devices
 
 [all:vars]
 port=22
@@ -58,6 +60,17 @@ port=22
 10.4.0.1  platform=mock_xferfail username=testuser  password=testpass
 """)
 
+# mock_linux.ini — Linux mock devices
+Path(os.path.join(_inv_dir, "mock_linux.ini")).write_text("""\
+# Test inventory — Linux mock devices
+
+[all:vars]
+port=22
+
+[mock_linux]
+10.5.0.1  platform=mock  username=testuser  password=testpass
+""")
+
 Path(_cfg_file).write_text(f"""\
 [server]
 host = "127.0.0.1"
@@ -72,7 +85,7 @@ retry_attempts = 2
 retry_delay = 0
 
 [inventory]
-path = "{_inv_file}"
+path = "{_inv_dir}"
 
 [logging]
 log_dir = "{_log_dir}"

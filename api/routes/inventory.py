@@ -46,6 +46,23 @@ def get_group_hosts(group: str):
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(e))
 
 
+@router.get("/sources", summary="List loaded inventory files with per-file host/group counts")
+def list_sources():
+    try:
+        inv = inventory_client._load()
+        sources = inv.sources
+        return {
+            "sources": [
+                {"file": fname, "hosts": info["hosts"], "groups": info["groups"]}
+                for fname, info in sources.items()
+            ],
+            "total_hosts":  len(inv.by_host),
+            "total_groups": len(inv.by_group),
+        }
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(e))
+
+
 @router.post("/reload", summary="Reload inventory.ini from disk without restarting")
 def reload_inventory():
     inventory_client.reload()

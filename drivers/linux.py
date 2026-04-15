@@ -62,9 +62,10 @@ class LinuxDriver(BaseDriver):
     def run_config_commands(self, commands: list[str]) -> str:
         """
         For Linux, 'remediation commands' are just shell commands run in sequence.
-        If any command returns a non-zero exit code the error is captured and
-        included in output, but execution continues for the remaining commands
-        (consistent with the project's continue-on-failure policy).
+        If any command returns a non-zero exit code a RuntimeError is raised
+        immediately. ssh_worker.py catches it and records it in the
+        CommandResult error field; the continue-on-failure policy (other
+        devices keep running) still applies at the job level.
         """
         if not self._client:
             raise RuntimeError("Not connected. Call connect() first.")
@@ -76,11 +77,14 @@ class LinuxDriver(BaseDriver):
             out = stdout.read().decode(errors="replace")
             err = stderr.read().decode(errors="replace")
             exit_code = stdout.channel.recv_exit_status()
+            if exit_code != 0:
+                raise RuntimeError(
+                    f"Command failed with exit code {exit_code}: {cmd}\n"
+                    f"stderr: {err.strip()}"
+                )
             block = f"# {cmd}\n{out}"
             if err.strip():
                 block += f"\n[stderr] {err.strip()}"
-            if exit_code != 0:
-                block += f"\n[exit_code={exit_code}]"
             results.append(block)
         return "\n".join(results)
 
