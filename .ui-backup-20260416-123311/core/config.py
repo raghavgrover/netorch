@@ -9,10 +9,6 @@ Config path resolution order:
 All config values are instance attributes (not class attributes), so
 patching _raw and reinstantiating the singletons at the bottom of this
 file correctly propagates to every module that imports them.
-
-ADDED: DatabaseConfig — reads optional [database] section from netorch.toml.
-       Defaults to /opt/netorch/netorch.db if the section is absent, so
-       existing installs work without any toml change.
 """
 import os
 import toml
@@ -76,38 +72,19 @@ class LoggingConfig:
 
 class RateLimitConfig:
     def __init__(self, raw: dict):
-        self.requests_per_minute:       int = raw["ratelimit"]["requests_per_minute"]
+        self.requests_per_minute:      int = raw["ratelimit"]["requests_per_minute"]
         self.job_submissions_per_minute:int = raw["ratelimit"]["job_submissions_per_minute"]
 
 
-class DatabaseConfig:
-    """
-    Reads the optional [database] section from netorch.toml.
-
-    If the section is absent (existing installs), defaults to
-    /opt/netorch/netorch.db — sibling of the config file itself.
-
-    netorch.toml example:
-        [database]
-        db_path = "/opt/netorch/netorch.db"
-    """
-    def __init__(self, raw: dict, config_path: Path):
-        db_section = raw.get("database", {})
-        default_db = config_path.parent / "netorch.db"
-        self.db_path: Path = Path(db_section.get("db_path", str(default_db)))
-
-
 def _build_all():
-    config_path  = _find_config()
-    raw          = toml.load(config_path)
+    raw = _load()
     _server      = ServerConfig(raw)
     _executor    = ExecutorConfig(raw)
     _inventory   = InventoryConfig(raw)
     _logging     = LoggingConfig(raw)
     _ratelimit   = RateLimitConfig(raw)
-    _database    = DatabaseConfig(raw, config_path)
     _logging.log_dir.mkdir(parents=True, exist_ok=True)
-    return _server, _executor, _inventory, _logging, _ratelimit, _database
+    return _server, _executor, _inventory, _logging, _ratelimit
 
 
-server, executor, inventory, logging_cfg, ratelimit, database = _build_all()
+server, executor, inventory, logging_cfg, ratelimit = _build_all()
