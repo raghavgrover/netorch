@@ -41,8 +41,8 @@ class JobStore:
     # Write side
     # ------------------------------------------------------------------
 
-    def create(self, job_id: str, mode: JobMode, device_count: int) -> None:
-        db.create_job(job_id, mode.value, device_count)
+    def create(self, job_id: str, mode: JobMode, device_count: int, incident: Optional[str] = None) -> None:
+        db.create_job(job_id, mode.value, device_count, incident=incident)
         self._export_json(job_id)
 
     def update_device_count(self, job_id: str, count: int) -> None:
@@ -161,6 +161,12 @@ class JobStore:
         return db.count_jobs(status_filter=status_filter, mode_filter=mode_filter)
 
     def log_path(self, job_id: str) -> Optional[Path]:
+        row = db.query_one("SELECT incident FROM jobs WHERE job_id=?", (job_id,))
+        incident = row["incident"] if row else None
+        if incident:
+            p = logging_cfg.log_dir / incident / f"{job_id}.json"
+            if p.exists():
+                return p
         p = logging_cfg.log_dir / f"{job_id}.json"
         return p if p.exists() else None
 
@@ -206,8 +212,14 @@ class JobStore:
                     "commands": [dict(c) for c in cmd_rows],
                 }
 
+            incident = job.get("incident")
+            if incident:
+                log_dir = logging_cfg.log_dir / incident
+                log_dir.mkdir(parents=True, exist_ok=True)
+            else:
+                log_dir = logging_cfg.log_dir
             snapshot = {**job, "devices": devices_out}
-            path = logging_cfg.log_dir / f"{job_id}.json"
+            path = log_dir / f"{job_id}.json"
             path.write_text(json.dumps(snapshot, indent=2, default=str), encoding="utf-8")
         except Exception:
             pass   # Export failure must never crash a job

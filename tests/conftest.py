@@ -93,6 +93,12 @@ log_dir = "{_log_dir}"
 [ratelimit]
 requests_per_minute = 1000
 job_submissions_per_minute = 100
+
+[database]
+db_path = "{_tmp_dir}/netorch_test.db"
+
+[vault]
+type = "none"
 """)
 
 # This must be set before ANY netorch module is imported
@@ -106,10 +112,12 @@ os.environ["NETORCH_CONFIG"] = _cfg_file
 from fastapi.testclient import TestClient  # noqa: E402
 from main import app                        # noqa: E402
 from secrets.inventory import inventory_client  # noqa: E402
+from secrets.provider import reload_provider  # noqa: E402
 
 # Force inventory to re-read from the test path
 # (in case a previous test session cached a different path)
 inventory_client.reload()
+reload_provider()
 
 # ---------------------------------------------------------------------------
 # 3. Shared constants

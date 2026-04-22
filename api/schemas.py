@@ -94,6 +94,7 @@ class JobSubmitRequest(BaseModel):
     remediation_commands: Optional[list[str]] = Field(None)
     file_transfers:       Optional[list[FileTransferEntry]] = Field(None)
     options:  JobOptions        = Field(default_factory=JobOptions)
+    incident: Optional[str]     = Field(None, description="Incident/ticket number for log organisation (e.g. INC12345).")
 
 
 # ---------------------------------------------------------------------------

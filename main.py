@@ -13,6 +13,7 @@ from api.routes.jobs      import router as jobs_router
 from api.routes.logs      import router as logs_router
 from api.routes.devices   import router as devices_router
 from api.routes.inventory import router as inventory_router
+from api.routes.runbooks  import router as runbooks_router
 from core.config import server
 from core.executor import active_job_count
 from core.config import executor as exec_cfg
@@ -52,6 +53,7 @@ app.include_router(jobs_router,      dependencies=[Depends(require_auth)])
 app.include_router(logs_router,      dependencies=[Depends(require_auth)])
 app.include_router(devices_router,   dependencies=[Depends(require_auth)])
 app.include_router(inventory_router, dependencies=[Depends(require_auth)])
+app.include_router(runbooks_router,  dependencies=[Depends(require_auth)])
 
 
 @app.get("/health", tags=["system"], summary="Health check — no auth required")

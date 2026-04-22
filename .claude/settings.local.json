@@ -16,7 +16,11 @@
       "Bash(journalctl -u netorch -n 30 --no-pager)",
       "Bash(sudo chmod *)",
       "Bash(sudo chown *)",
-      "Bash(sudo -u netorch ls /opt/netorch/inventory/)"
+      "Bash(sudo -u netorch ls /opt/netorch/inventory/)",
+      "Bash(journalctl -u netorch -n 150 --no-pager)",
+      "Bash(journalctl -u netorch.service -n 150 --no-pager)",
+      "Bash(journalctl -u netorch-ui -n 100 --no-pager)",
+      "Bash(systemctl is-active *)"
     ]
   }
 }

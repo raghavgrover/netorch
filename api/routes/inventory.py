@@ -24,6 +24,7 @@ from fastapi import APIRouter, HTTPException, Query, status
 from pydantic import BaseModel
 
 from secrets.inventory import inventory_client
+from secrets.provider import reload_provider
 from core.config import inventory as inventory_cfg
 
 router = APIRouter(prefix="/inventory", tags=["inventory"])
@@ -179,6 +180,7 @@ def get_group_hosts(group: str):
 @router.post("/reload", summary="Reload all inventory files from disk without restarting")
 def reload_inventory():
     inventory_client.reload()
+    reload_provider()
     return {"status": "reloaded", "inventory_path": str(inventory_cfg.path)}
 
 
@@ -247,6 +249,7 @@ def put_source(filename: str, body: SourceWriteBody):
             detail=f"Could not write file: {e}",
         )
     inventory_client.reload()
+    reload_provider()
     return {"status": "updated" if existed else "created", "filename": filename, "path": str(path)}
 
 
@@ -270,6 +273,7 @@ def post_source(body: SourceCreateBody):
             detail=f"Could not write file: {e}",
         )
     inventory_client.reload()
+    reload_provider()
     return {"status": "created", "filename": body.filename, "path": str(path)}
 
 
@@ -283,4 +287,5 @@ def delete_source(filename: str):
         )
     path.unlink()
     inventory_client.reload()
+    reload_provider()
     return {"status": "deleted", "filename": filename}

@@ -35,7 +35,8 @@ CREATE TABLE IF NOT EXISTS jobs (
     started_at   TEXT,
     completed_at TEXT,
     device_count INTEGER NOT NULL DEFAULT 0,
-    error        TEXT
+    error        TEXT,
+    incident     TEXT
 );
 
 CREATE TABLE IF NOT EXISTS devices (
@@ -98,6 +99,11 @@ class Database:
     def _apply_schema(self) -> None:
         with self._lock:
             self._conn.executescript(_SCHEMA)
+            # Runtime migration: add incident column to existing DBs
+            try:
+                self._conn.execute("ALTER TABLE jobs ADD COLUMN incident TEXT")
+            except sqlite3.OperationalError:
+                pass  # column already exists
 
     # ── Low-level helpers ─────────────────────────────────────────────────────
 
@@ -138,10 +144,10 @@ class Database:
 
     # ── Job write operations ──────────────────────────────────────────────────
 
-    def create_job(self, job_id: str, mode: str, device_count: int) -> None:
+    def create_job(self, job_id: str, mode: str, device_count: int, incident: Optional[str] = None) -> None:
         self.execute(
-            "INSERT INTO jobs (job_id, mode, status, device_count) VALUES (?,?,?,?)",
-            (job_id, mode, "queued", device_count),
+            "INSERT INTO jobs (job_id, mode, status, device_count, incident) VALUES (?,?,?,?,?)",
+            (job_id, mode, "queued", device_count, incident),
         )
 
     def update_job_device_count(self, job_id: str, count: int) -> None:

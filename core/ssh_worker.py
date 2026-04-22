@@ -19,7 +19,7 @@ from api.schemas import (
 )
 from drivers import get_driver
 from drivers.base import DeviceCredentials
-from secrets.inventory import inventory_client
+from secrets.provider import resolve_credentials
 from core.config import executor as exec_cfg
 from core.logger import get_logger
 
@@ -159,9 +159,9 @@ def run_device_job(
     start = time.monotonic()
     max_attempts = max(1, exec_cfg.retry_attempts)
 
-    # Resolve credentials from inventory
+    # Resolve credentials — inventory first, vault fallback if password is blank
     try:
-        creds: DeviceCredentials = inventory_client.get_credentials(
+        creds: DeviceCredentials = resolve_credentials(
             host=device.host,
             group=device.group,
             platform_hint=device.platform,

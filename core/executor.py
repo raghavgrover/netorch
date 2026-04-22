@@ -149,6 +149,7 @@ def submit_job(request: JobSubmitRequest) -> None:
         job_id=request.job_id,
         mode=request.mode,
         device_count=len(request.devices),
+        incident=getattr(request, "incident", None),
     )
     t = threading.Thread(
         target=_run_job,
