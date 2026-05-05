@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, status
+from pydantic import BaseModel
 
 from api.schemas import (
     DeviceEntry, JobOptions, JobSubmitRequest, JobSubmitResponse,
@@ -111,6 +112,24 @@ def list_runbooks():
         except HTTPException:
             pass  # skip unreadable files silently
     return {"runbooks": runbooks, "total": len(runbooks)}
+
+
+class RunbookWriteBody(BaseModel):
+    content: str
+
+
+@router.put("/{name}", summary="Overwrite a runbook file with new content")
+def put_runbook(name: str, body: RunbookWriteBody):
+    if "/" in name or name.startswith("."):
+        raise HTTPException(status_code=400, detail="Invalid runbook name.")
+    if not name.endswith(".sh"):
+        raise HTTPException(status_code=400, detail="Runbook name must end in .sh")
+    path = _runbooks_dir() / name
+    try:
+        path.write_text(body.content, encoding="utf-8")
+    except OSError as e:
+        raise HTTPException(status_code=500, detail=f"Write failed: {e}")
+    return {"name": name, "saved": True}
 
 
 @router.get("/{name}", summary="Get runbook content and extracted commands")
