@@ -74,6 +74,7 @@ def _parse_runbook(path: Path) -> dict:
         "size_bytes":    st.st_size,
         "command_count": len(commands),
         "commands":      commands,
+        "raw_lines":     lines,
     }
 
 
@@ -108,6 +109,7 @@ def list_runbooks():
         try:
             rb = _parse_runbook(p)
             rb.pop("commands", None)   # metadata only in listing
+            rb.pop("raw_lines", None)
             runbooks.append(rb)
         except HTTPException:
             pass  # skip unreadable files silently
