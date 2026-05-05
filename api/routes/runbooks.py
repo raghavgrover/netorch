@@ -132,6 +132,33 @@ def put_runbook(name: str, body: RunbookWriteBody):
     return {"name": name, "saved": True}
 
 
+class RunbookCreateBody(BaseModel):
+    filename: str
+    content:  str
+
+
+@router.post("", status_code=201, summary="Create a new runbook file")
+def create_runbook(body: RunbookCreateBody):
+    name = body.filename.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Filename is required.")
+    if not name.endswith(".sh"):
+        raise HTTPException(status_code=400, detail="Filename must end in .sh")
+    if "/" in name or name.startswith("."):
+        raise HTTPException(status_code=400, detail="Invalid filename.")
+    path = _runbooks_dir() / name
+    if path.exists():
+        raise HTTPException(
+            status_code=409,
+            detail=f"'{name}' already exists. Use PUT /runbooks/{name} to overwrite.",
+        )
+    try:
+        path.write_text(body.content, encoding="utf-8")
+    except OSError as e:
+        raise HTTPException(status_code=500, detail=f"Write failed: {e}")
+    return {"name": name, "created": True}
+
+
 @router.get("/{name}", summary="Get runbook content and extracted commands")
 def get_runbook(name: str):
     if "/" in name or name.startswith("."):
