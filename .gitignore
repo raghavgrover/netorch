@@ -10,7 +10,11 @@ netorch.toml
 *.ini
 *.env
 .env*
-secrets/
+# secrets/ Python module — tracked
+# but ignore any credential or token files inside it
+secrets/*.json
+secrets/*.key
+secrets/*.env
 creds/
 
 # --- Logs ---

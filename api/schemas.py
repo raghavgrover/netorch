@@ -11,6 +11,7 @@ import uuid
 class JobMode(str, Enum):
     audit      = "audit"
     remediate  = "remediate"
+    workflow   = "workflow"          # ← NEW: per-device subprocess workflow
 
 
 class JobStatus(str, Enum):
@@ -95,6 +96,76 @@ class JobSubmitRequest(BaseModel):
     file_transfers:       Optional[list[FileTransferEntry]] = Field(None)
     options:  JobOptions        = Field(default_factory=JobOptions)
     incident: Optional[str]     = Field(None, description="Incident/ticket number for log organisation (e.g. INC12345).")
+
+
+# ---------------------------------------------------------------------------
+# Workflow submission  ← NEW
+# ---------------------------------------------------------------------------
+
+class WorkflowOptions(BaseModel):
+    """Options specific to workflow execution."""
+    timeout_per_device: int = Field(
+        300,
+        ge=30,
+        le=3600,
+        description="Max seconds a workflow script may run per device before being killed.",
+    )
+    max_workers: int = Field(
+        10,
+        ge=1,
+        le=100,
+        description=(
+            "Max parallel device subprocesses. "
+            "Lower than job max_workers default because workflows often call "
+            "external APIs — be mindful of rate limits."
+        ),
+    )
+
+
+class WorkflowSubmitRequest(BaseModel):
+    """Request body for POST /workflows/{name}/run."""
+    job_id: Optional[str] = Field(
+        default_factory=lambda: f"wf-{uuid.uuid4().hex[:8]}",
+    )
+    devices:    list[DeviceEntry]    = Field(..., min_length=1)
+    parameters: dict[str, str]       = Field(
+        default_factory=dict,
+        description=(
+            "Key/value pairs injected as environment variables into the "
+            "workflow script alongside device context. "
+            "Values must be strings — numbers and booleans should be "
+            "stringified before submission."
+        ),
+    )
+    options:  WorkflowOptions        = Field(default_factory=WorkflowOptions)
+    incident: Optional[str]          = Field(
+        None,
+        description="Incident/ticket reference for log organisation.",
+    )
+
+
+class WorkflowSubmitResponse(BaseModel):
+    job_id:       str
+    status:       JobStatus
+    device_count: int
+    script:       str
+    log_path:     str
+
+
+class WorkflowInfo(BaseModel):
+    """Metadata about a single workflow script — returned by GET /workflows."""
+    name:        str
+    description: str
+    modified_at: str
+    size_bytes:  int
+    parameters:  list[str] = Field(
+        default_factory=list,
+        description=(
+            "Parameter names declared in the script header via "
+            "# PARAM: KEY — description lines. Used by the UI to "
+            "pre-populate the parameters form."
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------

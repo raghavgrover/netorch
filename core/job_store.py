@@ -4,17 +4,17 @@ core/job_store.py — Thread-safe job registry backed by SQLite.
 Drop-in replacement for the previous in-memory + JSON implementation.
 All public methods have identical signatures so no other file needs changing.
 
-What changed
-────────────
+What changed from original
+──────────────────────────
 Before: self._jobs dict (in-memory) + JSON files written on every mutation
 After:  SQLite DB via core.db.db  + JSON files kept as downloadable exports
 
-The in-memory dict is gone.  Every read and write goes to SQLite, which
-survives service restarts without any restore-from-disk logic.
-
-JSON export files (logs/jobs/<job_id>.json) are still written for
-compatibility with GET /logs/{id}/raw and the BigFix log harvesting script.
-They are now exports, not the source of truth.
+New in workflow branch
+──────────────────────
+append_workflow_log()   — called per stdout line from workflow subprocesses
+get_workflow_log()      — return lines for a single device (supports since_id)
+get_workflow_log_all()  — return lines for all devices in a job (since_id)
+get_workflow_log_hosts()— return distinct hosts that have written log lines
 """
 from __future__ import annotations
 
@@ -85,6 +85,58 @@ class JobStore:
     def mark_cancelled(self, job_id: str) -> None:
         db.mark_job_cancelled(job_id, _now_iso())
         self._export_json(job_id)
+
+    # ------------------------------------------------------------------
+    # Workflow log methods  ← NEW
+    # ------------------------------------------------------------------
+
+    def append_workflow_log(self, job_id: str, host: str, line: str) -> None:
+        """
+        Append a single stdout line from a workflow subprocess.
+        Called at high frequency (once per line) — must not block.
+        """
+        db.append_workflow_log(job_id, host, line)
+
+    def get_workflow_log(
+        self,
+        job_id: str,
+        host: str,
+        since_id: int = 0,
+    ) -> list[dict]:
+        """
+        Return workflow log lines for a single device.
+
+        Supports incremental polling: pass the `id` of the last received
+        row as `since_id` to get only new lines since that point.
+        Returns list of dicts with keys: id, line, created_at.
+        """
+        rows = db.get_workflow_log(job_id, host, since_id=since_id)
+        return [{"id": r["id"], "line": r["line"], "created_at": r["created_at"]} for r in rows]
+
+    def get_workflow_log_all(
+        self,
+        job_id: str,
+        since_id: int = 0,
+    ) -> list[dict]:
+        """
+        Return workflow log lines for all devices in a job.
+        Includes `host` field so the caller can group output per device.
+        Supports incremental polling via `since_id`.
+        """
+        rows = db.get_workflow_log_all(job_id, since_id=since_id)
+        return [
+            {
+                "id":         r["id"],
+                "host":       r["host"],
+                "line":       r["line"],
+                "created_at": r["created_at"],
+            }
+            for r in rows
+        ]
+
+    def get_workflow_log_hosts(self, job_id: str) -> list[str]:
+        """Return the distinct device hosts that have written log lines."""
+        return db.get_workflow_log_hosts(job_id)
 
     # ------------------------------------------------------------------
     # Read side

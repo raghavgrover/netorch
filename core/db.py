@@ -6,9 +6,10 @@ WAL journal mode: multiple readers, one writer, no blocking on reads.
 
 Schema
 ------
-jobs     — one row per job (status, timestamps, device_count, error)
-devices  — one row per device per job (status, duration, error)
-commands — one row per command result per device per job (output text)
+jobs           — one row per job (status, timestamps, device_count, error)
+devices        — one row per device per job (status, duration, error)
+commands       — one row per command result per device per job (output text)
+workflow_logs  — streaming per-device stdout lines for workflow jobs  ← NEW
 
 All writes go through the module-level `db` singleton which serialises
 them through a threading.Lock to be safe across executor threads.
@@ -62,10 +63,20 @@ CREATE TABLE IF NOT EXISTS commands (
     FOREIGN KEY (job_id, host) REFERENCES devices(job_id, host)
 );
 
-CREATE INDEX IF NOT EXISTS idx_jobs_status     ON jobs(status);
-CREATE INDEX IF NOT EXISTS idx_jobs_started_at ON jobs(started_at);
-CREATE INDEX IF NOT EXISTS idx_devices_job     ON devices(job_id);
-CREATE INDEX IF NOT EXISTS idx_commands_device ON commands(job_id, host);
+CREATE TABLE IF NOT EXISTS workflow_logs (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id     TEXT    NOT NULL,
+    host       TEXT    NOT NULL,
+    line       TEXT    NOT NULL,
+    created_at TEXT    NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_jobs_status       ON jobs(status);
+CREATE INDEX IF NOT EXISTS idx_jobs_started_at   ON jobs(started_at);
+CREATE INDEX IF NOT EXISTS idx_devices_job        ON devices(job_id);
+CREATE INDEX IF NOT EXISTS idx_commands_device    ON commands(job_id, host);
+CREATE INDEX IF NOT EXISTS idx_wflogs_job_host    ON workflow_logs(job_id, host);
+CREATE INDEX IF NOT EXISTS idx_wflogs_job         ON workflow_logs(job_id);
 """
 
 
@@ -99,11 +110,14 @@ class Database:
     def _apply_schema(self) -> None:
         with self._lock:
             self._conn.executescript(_SCHEMA)
-            # Runtime migration: add incident column to existing DBs
-            try:
-                self._conn.execute("ALTER TABLE jobs ADD COLUMN incident TEXT")
-            except sqlite3.OperationalError:
-                pass  # column already exists
+            # Runtime migrations: add columns to existing DBs
+            for sql in (
+                "ALTER TABLE jobs ADD COLUMN incident TEXT",
+            ):
+                try:
+                    self._conn.execute(sql)
+                except sqlite3.OperationalError:
+                    pass  # column already exists
 
     # ── Low-level helpers ─────────────────────────────────────────────────────
 
@@ -242,6 +256,62 @@ class Database:
                 self._conn.execute("ROLLBACK")
                 raise
 
+    # ── Workflow log operations  ← NEW ────────────────────────────────────────
+
+    def append_workflow_log(self, job_id: str, host: str, line: str) -> None:
+        """
+        Append a single stdout line from a workflow subprocess to the log.
+        Called once per line as the subprocess streams output — must be fast.
+        We intentionally do NOT use a transaction per line here; WAL mode
+        makes individual INSERTs safe and fast without explicit transactions.
+        """
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc).isoformat()
+        self.execute(
+            "INSERT INTO workflow_logs (job_id, host, line, created_at) VALUES (?,?,?,?)",
+            (job_id, host, line, now),
+        )
+
+    def get_workflow_log(
+        self,
+        job_id: str,
+        host: str,
+        since_id: int = 0,
+    ) -> list[sqlite3.Row]:
+        """
+        Return workflow log rows for a single device, optionally after a
+        given row id (for incremental/polling log tailing from the UI).
+        """
+        return self.query(
+            "SELECT id, line, created_at FROM workflow_logs "
+            "WHERE job_id=? AND host=? AND id>? ORDER BY id ASC",
+            (job_id, host, since_id),
+        )
+
+    def get_workflow_log_all(
+        self,
+        job_id: str,
+        since_id: int = 0,
+    ) -> list[sqlite3.Row]:
+        """
+        Return workflow log rows for all devices in a job, ordered by
+        insertion time. Includes the host field so the caller can group by device.
+        Used by the full-job log view.
+        """
+        return self.query(
+            "SELECT id, host, line, created_at FROM workflow_logs "
+            "WHERE job_id=? AND id>? ORDER BY id ASC",
+            (job_id, since_id),
+        )
+
+    def get_workflow_log_hosts(self, job_id: str) -> list[str]:
+        """Return the distinct hosts that have written workflow log lines."""
+        rows = self.query(
+            "SELECT DISTINCT host FROM workflow_logs WHERE job_id=? ORDER BY host",
+            (job_id,),
+        )
+        return [r["host"] for r in rows]
+
     # ── Job read operations ───────────────────────────────────────────────────
 
     def get_job(self, job_id: str) -> Optional[sqlite3.Row]:
@@ -364,9 +434,7 @@ def _db_path() -> Path:
     import os
     cfg_env = os.environ.get("NETORCH_CONFIG", "")
     if cfg_env:
-        # Test / non-standard install: put DB next to the config file
         return Path(cfg_env).parent / "netorch.db"
-    # Production: always /opt/netorch/netorch.db
     return Path("/opt/netorch/netorch.db")
 
 

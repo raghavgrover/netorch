@@ -1,5 +1,10 @@
 """
-main.py — FastAPI application entrypoint for netorch v1.2.0.
+main.py — FastAPI application entrypoint for netorch v1.3.0.
+
+Changes from v1.2.0
+───────────────────
+- Registered workflows_router at /workflows
+- Version bumped to 1.3.0
 """
 from fastapi import FastAPI, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -9,11 +14,12 @@ from slowapi.middleware import SlowAPIMiddleware
 
 from api.auth import require_auth
 from api.middleware import limiter
-from api.routes.jobs      import router as jobs_router
-from api.routes.logs      import router as logs_router
-from api.routes.devices   import router as devices_router
-from api.routes.inventory import router as inventory_router
-from api.routes.runbooks  import router as runbooks_router
+from api.routes.jobs       import router as jobs_router
+from api.routes.logs       import router as logs_router
+from api.routes.devices    import router as devices_router
+from api.routes.inventory  import router as inventory_router
+from api.routes.runbooks   import router as runbooks_router
+from api.routes.workflows  import router as workflows_router   # ← NEW
 from core.config import server
 from core.executor import active_job_count
 from core.config import executor as exec_cfg
@@ -23,9 +29,10 @@ app = FastAPI(
     title="netorch — Network Configuration Orchestrator",
     description=(
         "Lightweight SSH-based audit and remediation orchestrator "
-        "for Cisco IOS/IOS-XE, IOS-XR, and Linux devices."
+        "for Cisco IOS/IOS-XE, IOS-XR, and Linux devices. "
+        "Includes workflow engine for multi-step orchestration scripts."
     ),
-    version="1.2.0",
+    version="1.3.0",
     docs_url="/docs",
     redoc_url="/redoc",
 )
@@ -54,11 +61,12 @@ app.include_router(logs_router,      dependencies=[Depends(require_auth)])
 app.include_router(devices_router,   dependencies=[Depends(require_auth)])
 app.include_router(inventory_router, dependencies=[Depends(require_auth)])
 app.include_router(runbooks_router,  dependencies=[Depends(require_auth)])
+app.include_router(workflows_router, dependencies=[Depends(require_auth)])  # ← NEW
 
 
 @app.get("/health", tags=["system"], summary="Health check — no auth required")
 def health():
-    return {"status": "ok", "service": "netorch", "version": "1.2.0"}
+    return {"status": "ok", "service": "netorch", "version": "1.3.0"}
 
 
 @app.get(
@@ -71,7 +79,7 @@ def stats():
     return SystemStatsResponse(
         active_jobs     = active_job_count(),
         max_queue_depth = exec_cfg.max_queue_depth,
-        version         = "1.2.0",
+        version         = "1.3.0",
     )
 
 
