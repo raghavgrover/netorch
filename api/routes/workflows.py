@@ -109,6 +109,7 @@ def _parse_workflow(path: Path) -> dict:
         "modified_at": modified,
         "size_bytes":  st.st_size,
         "parameters":  parameters,
+        "raw_content": text,
     }
 
 
@@ -155,6 +156,7 @@ def list_workflows():
     for p in sorted(d.glob("*.sh")):
         try:
             wf = _parse_workflow(p)
+            wf.pop("raw_content", None)   # metadata only in listing
             workflows.append(wf)
         except HTTPException:
             pass  # skip unreadable files silently
