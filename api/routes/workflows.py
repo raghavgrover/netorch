@@ -10,6 +10,8 @@ Endpoints
 ─────────
 GET  /workflows                          List all .sh scripts in WORKFLOWS_DIR
 GET  /workflows/{name}                   Metadata for a single workflow script
+POST /workflows                          Create a new workflow script
+PUT  /workflows/{name}                   Overwrite an existing workflow script
 POST /workflows/{name}/run               Submit a workflow job
 GET  /workflows/{name}/log/{job_id}      Full log for all devices (polling)
 GET  /workflows/{name}/log/{job_id}/{host}  Per-device log (polling, since_id)
@@ -23,6 +25,7 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query, status
+from pydantic import BaseModel
 
 from api.schemas import (
     DeviceEntry, WorkflowOptions, WorkflowSubmitRequest,
@@ -156,6 +159,48 @@ def list_workflows():
         except HTTPException:
             pass  # skip unreadable files silently
     return {"workflows": workflows, "total": len(workflows)}
+
+
+class WorkflowWriteBody(BaseModel):
+    content: str
+
+class WorkflowCreateBody(BaseModel):
+    filename: str
+    content:  str
+
+
+@router.post("", status_code=201, summary="Create a new workflow script")
+def create_workflow(body: WorkflowCreateBody):
+    name = body.filename.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Filename is required.")
+    if not name.endswith(".sh"):
+        raise HTTPException(status_code=400, detail="Filename must end in .sh")
+    _safe_name(name)
+    path = _workflows_dir() / name
+    if path.exists():
+        raise HTTPException(
+            status_code=409,
+            detail=f"'{name}' already exists. Use PUT /workflows/{name} to overwrite.",
+        )
+    try:
+        path.write_text(body.content, encoding="utf-8")
+    except OSError as e:
+        raise HTTPException(status_code=500, detail=f"Write failed: {e}")
+    return {"name": name, "created": True}
+
+
+@router.put("/{name}", summary="Overwrite a workflow script with new content")
+def put_workflow(name: str, body: WorkflowWriteBody):
+    _safe_name(name)
+    if not name.endswith(".sh"):
+        raise HTTPException(status_code=400, detail="Workflow name must end in .sh")
+    path = _workflows_dir() / name
+    try:
+        path.write_text(body.content, encoding="utf-8")
+    except OSError as e:
+        raise HTTPException(status_code=500, detail=f"Write failed: {e}")
+    return {"name": name, "saved": True}
 
 
 @router.get("/{name}", summary="Get workflow script metadata and declared parameters")
