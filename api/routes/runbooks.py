@@ -161,6 +161,20 @@ def create_runbook(body: RunbookCreateBody):
     return {"name": name, "created": True}
 
 
+@router.delete("/{name}", summary="Delete a runbook file")
+def delete_runbook(name: str):
+    if "/" in name or name.startswith("."):
+        raise HTTPException(status_code=400, detail="Invalid runbook name.")
+    path = _runbooks_dir() / name
+    if not path.exists():
+        raise HTTPException(status_code=404, detail=f"Runbook '{name}' not found.")
+    try:
+        path.unlink()
+    except OSError as e:
+        raise HTTPException(status_code=500, detail=f"Delete failed: {e}")
+    return {"name": name, "deleted": True}
+
+
 @router.get("/{name}", summary="Get runbook content and extracted commands")
 def get_runbook(name: str):
     if "/" in name or name.startswith("."):

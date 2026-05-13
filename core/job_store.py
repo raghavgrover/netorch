@@ -71,10 +71,12 @@ class JobStore:
 
     def mark_complete(self, job_id: str) -> None:
         counts = db.get_job_summary_counts(job_id)
-        status = (
-            JobStatus.partial_failure.value if counts["failed"] > 0
-            else JobStatus.completed.value
-        )
+        if counts["failed"] == 0:
+            status = JobStatus.completed.value
+        elif counts["success"] == 0:
+            status = JobStatus.failed.value
+        else:
+            status = JobStatus.partial_failure.value
         db.mark_job_complete(job_id, status, _now_iso())
         self._export_json(job_id)
 

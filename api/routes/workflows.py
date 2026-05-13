@@ -205,6 +205,19 @@ def put_workflow(name: str, body: WorkflowWriteBody):
     return {"name": name, "saved": True}
 
 
+@router.delete("/{name}", summary="Delete a workflow script")
+def delete_workflow(name: str):
+    _safe_name(name)
+    path = _workflows_dir() / name
+    if not path.exists():
+        raise HTTPException(status_code=404, detail=f"Workflow '{name}' not found.")
+    try:
+        path.unlink()
+    except OSError as e:
+        raise HTTPException(status_code=500, detail=f"Delete failed: {e}")
+    return {"name": name, "deleted": True}
+
+
 @router.get("/{name}", summary="Get workflow script metadata and declared parameters")
 def get_workflow(name: str):
     _safe_name(name)
