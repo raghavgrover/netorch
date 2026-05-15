@@ -9,7 +9,7 @@ from tests.conftest import wait_for_completion
 def _run_job(client, headers, job_id):
     r = client.post("/jobs", json={
         "job_id":   job_id,
-        "mode":     "audit",
+        "mode": "run",
         "devices":  [{"host": "10.0.0.1", "group": "mock_switches"}],
         "commands": ["show version"],
         "options":  {"timeout_per_device": 5, "max_workers": 2},

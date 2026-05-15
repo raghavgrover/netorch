@@ -4,15 +4,15 @@
 #
 # Usage (called by BigFix action):
 #   bash bigfix_trigger.sh \
-#     --mode audit|remediate \
+#     --mode run \
 #     --devices "host_or_group_per_line" \
 #     --commands "one_command_per_line" \
-#     [--remediation-commands "one_command_per_line"] \
+#     [--config-mode-commands "one_command_per_line"] \
 #     [--config-file "/path/to/staged/file"]
 #
 # Arguments can also be passed via environment variables:
 #   NETORCH_MODE, NETORCH_DEVICES, NETORCH_COMMANDS,
-#   NETORCH_REMEDIATION_COMMANDS, NETORCH_CONFIG_FILE
+#   NETORCH_CONFIG_MODE_COMMANDS, NETORCH_CONFIG_FILE
 #
 # Exit codes:
 #   0 — job completed or partial_failure (inspect result log)
@@ -36,36 +36,36 @@ MAX_POLLS="${NETORCH_MAX_POLLS:-120}"    # 120 × 5s = 10 min max wait
 MODE="${NETORCH_MODE:-}"
 DEVICES_RAW="${NETORCH_DEVICES:-}"
 COMMANDS_RAW="${NETORCH_COMMANDS:-}"
-REMEDIATION_COMMANDS_RAW="${NETORCH_REMEDIATION_COMMANDS:-}"
+CONFIG_MODE_COMMANDS_RAW="${NETORCH_CONFIG_MODE_COMMANDS:-}"
 CONFIG_FILE="${NETORCH_CONFIG_FILE:-}"
 FILE_TRANSFERS_RAW="${NETORCH_FILE_TRANSFERS:-}"
 
 usage() {
     cat >&2 <<EOF
-Usage: $0 --mode audit|remediate --devices DEVICES --commands COMMANDS
-          [--remediation-commands CMDS] [--config-file PATH]
+Usage: $0 --mode run --devices DEVICES --commands COMMANDS
+          [--config-mode-commands CMDS] [--config-file PATH]
           [--file-transfers "lpath1:rpath1:post_cmd1;;post_cmd2|lpath2:rpath2:"]
 
-  --mode                  audit or remediate (required)
-  --devices               Newline-separated list of hostnames, IPs, or group names (required)
-  --commands              Newline-separated list of commands to run (required)
-  --remediation-commands  Newline-separated config commands (required when mode=remediate)
-  --config-file           Path to a single file staged on the relay (legacy; prefer --file-transfers)
-  --file-transfers        Pipe-delimited file transfer entries.
-                          Each entry: local_path:remote_path:post_cmd1;;post_cmd2
-                          (post-transfer commands are optional; omit or leave blank)
+  --mode                   run (required)
+  --devices                Newline-separated list of hostnames, IPs, or group names (required)
+  --commands               Newline-separated list of exec-mode commands to run
+  --config-mode-commands   Newline-separated config-mode commands (conf t / config terminal)
+  --config-file            Path to a single file staged on the relay (legacy; prefer --file-transfers)
+  --file-transfers         Pipe-delimited file transfer entries.
+                           Each entry: local_path:remote_path:post_cmd1;;post_cmd2
+                           (post-transfer commands are optional; omit or leave blank)
 EOF
     exit 1
 }
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --mode)                  MODE="$2";                    shift 2 ;;
-        --devices)               DEVICES_RAW="$2";             shift 2 ;;
-        --commands)              COMMANDS_RAW="$2";            shift 2 ;;
-        --remediation-commands)  REMEDIATION_COMMANDS_RAW="$2"; shift 2 ;;
-        --config-file)           CONFIG_FILE="$2";             shift 2 ;;
-        --file-transfers)        FILE_TRANSFERS_RAW="$2";      shift 2 ;;
+        --mode)                   MODE="$2";                       shift 2 ;;
+        --devices)                DEVICES_RAW="$2";               shift 2 ;;
+        --commands)               COMMANDS_RAW="$2";              shift 2 ;;
+        --config-mode-commands)   CONFIG_MODE_COMMANDS_RAW="$2";  shift 2 ;;
+        --config-file)            CONFIG_FILE="$2";               shift 2 ;;
+        --file-transfers)         FILE_TRANSFERS_RAW="$2";        shift 2 ;;
         -h|--help)               usage ;;
         *) echo "[netorch] ERROR: Unknown argument: $1" >&2; usage ;;
     esac
@@ -78,7 +78,7 @@ done
 # ---------------------------------------------------------------------------
 DEVICES_RAW="${DEVICES_RAW//$'\\n'/$'\n'}"
 COMMANDS_RAW="${COMMANDS_RAW//$'\\n'/$'\n'}"
-REMEDIATION_COMMANDS_RAW="${REMEDIATION_COMMANDS_RAW//$'\\n'/$'\n'}"
+CONFIG_MODE_COMMANDS_RAW="${CONFIG_MODE_COMMANDS_RAW//$'\\n'/$'\n'}"
 
 # ---------------------------------------------------------------------------
 # Validate required arguments
@@ -86,18 +86,13 @@ REMEDIATION_COMMANDS_RAW="${REMEDIATION_COMMANDS_RAW//$'\\n'/$'\n'}"
 [[ -z "$MODE" ]]        && echo "[netorch] ERROR: --mode is required." >&2        && usage
 [[ -z "$DEVICES_RAW" ]] && echo "[netorch] ERROR: --devices is required." >&2     && usage
 
-if [[ "$MODE" != "audit" && "$MODE" != "remediate" ]]; then
-    echo "[netorch] ERROR: --mode must be 'audit' or 'remediate', got: $MODE" >&2
+if [[ "$MODE" != "run" ]]; then
+    echo "[netorch] ERROR: --mode must be 'run', got: $MODE" >&2
     exit 1
 fi
 
-if [[ -z "$COMMANDS_RAW" && -z "$FILE_TRANSFERS_RAW" && -z "$CONFIG_FILE" ]]; then
-    echo "[netorch] ERROR: at least one of --commands or --file-transfers must be provided." >&2
-    exit 1
-fi
-
-if [[ "$MODE" == "remediate" && -z "$REMEDIATION_COMMANDS_RAW" && -z "$FILE_TRANSFERS_RAW" ]]; then
-    echo "[netorch] ERROR: mode=remediate requires either --remediation-commands or --file-transfers." >&2
+if [[ -z "$COMMANDS_RAW" && -z "$CONFIG_MODE_COMMANDS_RAW" && -z "$FILE_TRANSFERS_RAW" && -z "$CONFIG_FILE" ]]; then
+    echo "[netorch] ERROR: at least one of --commands, --config-mode-commands, or --file-transfers must be provided." >&2
     exit 1
 fi
 
@@ -110,7 +105,7 @@ fi
 # Build JSON payload with python3 (handles quoting/escaping correctly)
 # ---------------------------------------------------------------------------
 PAYLOAD=$(MODE="$MODE" DEVICES_RAW="$DEVICES_RAW" COMMANDS_RAW="$COMMANDS_RAW" \
-  REM_RAW="$REMEDIATION_COMMANDS_RAW" CONFIG_FILE="$CONFIG_FILE" \
+  CFG_MODE_RAW="$CONFIG_MODE_COMMANDS_RAW" CONFIG_FILE="$CONFIG_FILE" \
   FILE_TRANSFERS_RAW="$FILE_TRANSFERS_RAW" \
   python3 - <<'PYEOF'
 import json, os
@@ -118,7 +113,7 @@ import json, os
 mode               = os.environ['MODE']
 devices_raw        = os.environ['DEVICES_RAW']
 commands_raw       = os.environ['COMMANDS_RAW']
-rem_raw            = os.environ['REM_RAW']
+cfg_mode_raw       = os.environ['CFG_MODE_RAW']
 config_file        = os.environ['CONFIG_FILE']
 file_transfers_raw = os.environ['FILE_TRANSFERS_RAW']
 
@@ -146,8 +141,8 @@ payload = {
 if commands:
     payload["commands"] = commands
 
-if rem_raw:
-    payload["remediation_commands"] = parse_lines(rem_raw)
+if cfg_mode_raw:
+    payload["config_mode_commands"] = parse_lines(cfg_mode_raw)
 
 # Build file_transfers list.  Two sources:
 #   1. Legacy --config-file: single local path, empty remote (operator fills later).

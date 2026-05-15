@@ -2,7 +2,7 @@
 core/ssh_worker.py — Per-device SSH worker with retry logic.
 
 Accepts a DeviceEntry, resolves credentials from the local inventory,
-then connects via the correct driver and runs audit/remediation commands.
+then connects via the correct driver and runs commands.
 
 Retries transient SSH failures up to executor.retry_attempts times
 with executor.retry_delay seconds between attempts.
@@ -17,6 +17,7 @@ from api.schemas import (
     CommandResult, DeviceResult, DeviceStatus, JobMode, DeviceEntry,
     FileTransferEntry,
 )
+# JobMode is kept in the signature of run_device_job for compatibility with executor.py
 from drivers import get_driver
 from drivers.base import DeviceCredentials
 from secrets.provider import resolve_credentials
@@ -45,9 +46,8 @@ def _now_iso() -> str:
 
 def _attempt(
     creds: DeviceCredentials,
-    mode: JobMode,
     commands: list[str],
-    remediation_commands: list[str] | None,
+    config_mode_commands: list[str] | None,
     file_transfers: list[FileTransferEntry] | None,
     timeout: int,
     backup_config: bool,
@@ -61,11 +61,23 @@ def _attempt(
     config_backup: str | None = None
 
     with driver:
-        if mode == JobMode.remediate and backup_config:
+        if backup_config:
             try:
                 config_backup = driver.get_running_config()
             except Exception as e:
                 config_backup = f"[backup failed: {e}]"
+
+        for cmd in commands:
+            ts = _now_iso()
+            try:
+                output = driver.run_command(cmd)
+                command_results.append(CommandResult(
+                    command=cmd, output=output, timestamp=ts,
+                ))
+            except Exception as e:
+                command_results.append(CommandResult(
+                    command=cmd, output="", timestamp=ts, error=str(e),
+                ))
 
         if file_transfers:
             for ft in file_transfers:
@@ -86,28 +98,15 @@ def _attempt(
                         command=label, output="", timestamp=ts, error=str(e),
                     ))
 
-        for cmd in commands:
+        if config_mode_commands:
             ts = _now_iso()
             try:
-                output = driver.run_command(cmd)
-                command_results.append(CommandResult(
-                    command=cmd, output=output, timestamp=ts,
-                ))
-            except Exception as e:
-                command_results.append(CommandResult(
-                    command=cmd, output="", timestamp=ts, error=str(e),
-                ))
-
-        if mode == JobMode.remediate and remediation_commands:
-            ts = _now_iso()
-            try:
-                rem_output = driver.run_config_commands(remediation_commands)
+                cfg_output = driver.run_config_commands(config_mode_commands)
                 # Parse combined output back into per-command sections.
                 # run_config_commands formats each section as "# <cmd>\n<output>".
-                # Split on lines that start with "# " to recover per-command output.
                 sections: list[str] = []
                 current: list[str] = []
-                for line in rem_output.splitlines():
+                for line in cfg_output.splitlines():
                     if line.startswith("# ") and current:
                         sections.append("\n".join(current))
                         current = [line]
@@ -115,24 +114,21 @@ def _attempt(
                         current.append(line)
                 if current:
                     sections.append("\n".join(current))
-                # Map each section back to its original command by index.
-                # Each section starts with "# <cmd>" as the first line;
-                # the output is everything after that line.
-                for i, cmd in enumerate(remediation_commands):
+                for i, cmd in enumerate(config_mode_commands):
                     if i < len(sections):
                         body = "\n".join(sections[i].splitlines()[1:]).strip()
                     else:
                         body = ""
                     command_results.append(CommandResult(
-                        command=f"[remediate] {cmd}",
+                        command=f"[config] {cmd}",
                         output=body,
                         timestamp=ts,
                     ))
             except Exception as e:
                 err_msg = str(e)
-                for cmd in remediation_commands:
+                for cmd in config_mode_commands:
                     command_results.append(CommandResult(
-                        command=f"[remediate] {cmd}",
+                        command=f"[config] {cmd}",
                         output="",
                         timestamp=ts,
                         error=err_msg,
@@ -145,7 +141,7 @@ def run_device_job(
     device: DeviceEntry,
     mode: JobMode,
     commands: list[str],
-    remediation_commands: list[str] | None,
+    config_mode_commands: list[str] | None,
     file_transfers: list[FileTransferEntry] | None,
     timeout: int,
     backup_config: bool,
@@ -189,9 +185,8 @@ def run_device_job(
 
             command_results, config_backup = _attempt(
                 creds=creds,
-                mode=mode,
                 commands=commands,
-                remediation_commands=remediation_commands,
+                config_mode_commands=config_mode_commands,
                 file_transfers=file_transfers,
                 timeout=timeout,
                 backup_config=backup_config,

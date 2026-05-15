@@ -144,10 +144,10 @@ def auth_headers():
 
 
 @pytest.fixture
-def audit_payload():
+def run_payload():
     return {
-        "job_id":   "test-audit-001",
-        "mode":     "audit",
+        "job_id":   "test-run-001",
+        "mode": "run",
         "devices":  [
             {"host": "10.0.0.1", "group": "mock_switches"},
             {"host": "10.0.0.2", "group": "mock_switches"},
@@ -158,13 +158,13 @@ def audit_payload():
 
 
 @pytest.fixture
-def remediate_payload():
+def config_mode_payload():
     return {
-        "job_id":                "test-rem-001",
-        "mode":                  "remediate",
+        "job_id":                "test-config-001",
+        "mode": "run",
         "devices":               [{"host": "10.0.0.1", "group": "mock_switches"}],
         "commands":              ["show running-config | include ntp"],
-        "remediation_commands":  ["ntp server 10.0.0.1", "ntp server 10.0.0.2"],
+        "config_mode_commands":  ["ntp server 10.0.0.1", "ntp server 10.0.0.2"],
         "options":               {
             "timeout_per_device":          5,
             "max_workers":                 5,

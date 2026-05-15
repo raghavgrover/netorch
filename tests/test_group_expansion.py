@@ -17,7 +17,7 @@ def test_group_only_expands_all_hosts(client, auth_headers):
     """
     r = client.post("/jobs", json={
         "job_id":   "expand-group-001",
-        "mode":     "audit",
+        "mode": "run",
         "devices":  [{"group": "mock_switches"}],
         "commands": ["show version"],
         "options":  {"timeout_per_device": 5, "max_workers": 5},
@@ -36,7 +36,7 @@ def test_group_only_detail_has_all_hosts(client, auth_headers):
     """Detail response should contain one entry per expanded host."""
     client.post("/jobs", json={
         "job_id":   "expand-group-002",
-        "mode":     "audit",
+        "mode": "run",
         "devices":  [{"group": "mock_switches"}],
         "commands": ["show version"],
         "options":  {"timeout_per_device": 5, "max_workers": 5},
@@ -57,7 +57,7 @@ def test_multiple_groups_expanded(client, auth_headers):
     """Two group-only entries from different groups are both expanded."""
     r = client.post("/jobs", json={
         "job_id":   "expand-multi-001",
-        "mode":     "audit",
+        "mode": "run",
         "devices":  [
             {"group": "mock_switches"},   # 3 hosts
             {"group": "mock_cmdfail"},    # 1 host
@@ -79,7 +79,7 @@ def test_multiple_groups_expanded(client, auth_headers):
 def test_host_only_entry(client, auth_headers):
     r = client.post("/jobs", json={
         "job_id":   "expand-host-001",
-        "mode":     "audit",
+        "mode": "run",
         "devices":  [{"host": "10.0.0.1"}],
         "commands": ["show version"],
         "options":  {"timeout_per_device": 5, "max_workers": 2},
@@ -95,7 +95,7 @@ def test_host_with_group_fallback(client, auth_headers):
     """Host + group — targets just the host, group used for creds."""
     r = client.post("/jobs", json={
         "job_id":   "expand-host-group-001",
-        "mode":     "audit",
+        "mode": "run",
         "devices":  [{"host": "10.0.0.1", "group": "mock_switches"}],
         "commands": ["show version"],
         "options":  {"timeout_per_device": 5, "max_workers": 2},
@@ -117,7 +117,7 @@ def test_mixed_host_and_group_entries(client, auth_headers):
     """
     r = client.post("/jobs", json={
         "job_id":   "expand-mixed-001",
-        "mode":     "audit",
+        "mode": "run",
         "devices":  [
             {"host": "10.0.0.1"},            # 1 host explicit
             {"group": "mock_timeouts"},       # 1 host from group
@@ -140,7 +140,7 @@ def test_neither_host_nor_group_rejected(client, auth_headers):
     """A device entry with neither host nor group is a 422."""
     r = client.post("/jobs", json={
         "job_id":   "expand-bad-001",
-        "mode":     "audit",
+        "mode": "run",
         "devices":  [{"platform": "cisco_ios"}],
         "commands": ["show version"],
     }, headers=auth_headers)
@@ -151,7 +151,7 @@ def test_unknown_group_rejected(client, auth_headers):
     """A group name that doesn't exist in inventory returns 400."""
     r = client.post("/jobs", json={
         "job_id":   "expand-badgroup-001",
-        "mode":     "audit",
+        "mode": "run",
         "devices":  [{"group": "this_group_does_not_exist"}],
         "commands": ["show version"],
     }, headers=auth_headers)
@@ -162,7 +162,7 @@ def test_unknown_group_rejected(client, auth_headers):
 def test_empty_devices_list_rejected(client, auth_headers):
     r = client.post("/jobs", json={
         "job_id":   "expand-empty-001",
-        "mode":     "audit",
+        "mode": "run",
         "devices":  [],
         "commands": ["show version"],
     }, headers=auth_headers)

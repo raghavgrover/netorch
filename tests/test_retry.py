@@ -5,7 +5,7 @@ import pytest
 from tests.conftest import wait_for_completion
 
 
-def _submit(client, headers, job_id, devices, commands=None, mode="audit"):
+def _submit(client, headers, job_id, devices, commands=None, mode="run"):
     r = client.post("/jobs", json={
         "job_id":   job_id,
         "mode":     mode,
@@ -45,7 +45,7 @@ def test_cmdfail_device_marked_success_with_per_cmd_errors(client, auth_headers)
     """
     mock_cmdfail connects OK but every run_command call raises RuntimeError.
     ssh_worker._attempt() catches each exception individually (one try/except
-    per command in the audit loop) and stores it in CommandResult.error.
+    per command in the run loop) and stores it in CommandResult.error.
     _attempt() returns normally → device-level status = success.
 
     The same pattern applies to run_config_commands failures (e.g. a Linux

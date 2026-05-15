@@ -37,7 +37,7 @@ def test_single_file_transfer_succeeds(client, auth_headers, tmp_path):
     local_file.write_bytes(b"fake firmware content")
 
     payload = {
-        "mode":    "audit",
+        "mode": "run",
         "devices": [{"host": "10.0.0.1", "group": "mock_switches"}],
         "commands": ["show version"],
         "file_transfers": [
@@ -71,7 +71,7 @@ def test_multiple_file_transfers_succeed(client, auth_headers, tmp_path):
     file2.write_bytes(b"patch data")
 
     payload = {
-        "mode":    "audit",
+        "mode": "run",
         "devices": [{"host": "10.0.0.1", "group": "mock_switches"}],
         "commands": ["show version"],
         "file_transfers": [
@@ -104,7 +104,7 @@ def test_multiple_file_transfers_succeed(client, auth_headers, tmp_path):
 
 def test_missing_local_path_returns_400(client, auth_headers):
     payload = {
-        "mode":    "audit",
+        "mode": "run",
         "devices": [{"host": "10.0.0.1", "group": "mock_switches"}],
         "commands": ["show version"],
         "file_transfers": [
@@ -130,7 +130,7 @@ def test_transfer_failure_captured_per_device_job_continues(
     local_file.write_bytes(b"data")
 
     payload = {
-        "mode":    "audit",
+        "mode": "run",
         # Two devices: one succeeds, one fails on transfer
         "devices": [
             {"host": "10.0.0.1", "group": "mock_switches"},   # mock — transfer OK
@@ -179,7 +179,7 @@ def test_post_transfer_commands_run(client, auth_headers, tmp_path):
     local_file.write_bytes(b"#!/bin/bash\necho hello")
 
     payload = {
-        "mode":    "audit",
+        "mode": "run",
         "devices": [{"host": "10.0.0.1", "group": "mock_switches"}],
         "commands": ["show version"],
         "file_transfers": [

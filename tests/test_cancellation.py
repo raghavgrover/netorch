@@ -14,7 +14,7 @@ def test_cancel_nonexistent_job(client, auth_headers):
 def test_cancel_completed_job_rejected(client, auth_headers):
     client.post("/jobs", json={
         "job_id":   "cancel-done-001",
-        "mode":     "audit",
+        "mode": "run",
         "devices":  [{"host": "10.0.0.1", "group": "mock_switches"}],
         "commands": ["show version"],
         "options":  {"timeout_per_device": 5, "max_workers": 2},
@@ -28,7 +28,7 @@ def test_cancel_completed_job_rejected(client, auth_headers):
 def test_cancel_response_fields(client, auth_headers):
     client.post("/jobs", json={
         "job_id":   "cancel-resp-001",
-        "mode":     "audit",
+        "mode": "run",
         "devices":  [{"host": "10.0.0.1", "group": "mock_switches"}],
         "commands": ["show version"],
         "options":  {"timeout_per_device": 5, "max_workers": 2},
@@ -47,7 +47,7 @@ def test_cancel_response_fields(client, auth_headers):
 def test_cancelled_job_reaches_terminal_state(client, auth_headers):
     client.post("/jobs", json={
         "job_id":   "cancel-terminal-001",
-        "mode":     "audit",
+        "mode": "run",
         "devices":  [
             {"host": "10.0.0.1", "group": "mock_switches"},
             {"host": "10.0.0.2", "group": "mock_switches"},

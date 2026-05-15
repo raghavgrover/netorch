@@ -99,7 +99,7 @@ def _run_job(request: JobSubmitRequest) -> None:
                     device=device,
                     mode=request.mode,
                     commands=request.commands,
-                    remediation_commands=request.remediation_commands,
+                    config_mode_commands=request.config_mode_commands,
                     file_transfers=request.file_transfers,
                     timeout=request.options.timeout_per_device,
                     backup_config=request.options.backup_config_before_change,

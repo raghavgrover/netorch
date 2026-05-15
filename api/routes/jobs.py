@@ -44,7 +44,7 @@ def _expand_devices(devices: list[DeviceEntry]) -> list[DeviceEntry]:
 
 @router.post("", status_code=status.HTTP_202_ACCEPTED,
              response_model=JobSubmitResponse,
-             summary="Submit an audit or remediation job")
+             summary="Submit a job")
 def create_job(request: JobSubmitRequest) -> JobSubmitResponse:
     if store.exists(request.job_id):
         raise HTTPException(status_code=status.HTTP_409_CONFLICT,
@@ -58,9 +58,9 @@ def create_job(request: JobSubmitRequest) -> JobSubmitResponse:
                 raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
                                     detail=f"file_transfers: local_path not found: {ft.local_path}")
     request.devices = _expand_devices(request.devices)
-    if not request.commands and not request.file_transfers:
+    if not request.commands and not request.config_mode_commands and not request.file_transfers:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
-                            detail="At least one of 'commands' or 'file_transfers' must be provided.")
+                            detail="At least one of 'commands', 'config_mode_commands', or 'file_transfers' must be provided.")
     submit_job(request)
     log.info("job_accepted", job_id=request.job_id, device_count=len(request.devices))
     return JobSubmitResponse(

@@ -16,7 +16,7 @@
 #
 # The runbook must exist in /opt/netorch/runbooks/ on the relay server.
 # Non-blank, non-comment lines from the runbook are submitted as commands
-# in audit mode to all targeted devices.
+# in run mode to all targeted devices.
 #
 # The job result log is saved under:
 #   /opt/netorch/logs/jobs/<incident>/<job_id>.json

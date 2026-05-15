@@ -18,7 +18,7 @@ def test_submit_requires_host_or_group(client, auth_headers):
     """Device entry with neither host nor group is rejected with 422."""
     r = client.post("/jobs", json={
         "job_id":   "bad-no-host-group",
-        "mode":     "audit",
+        "mode": "run",
         "devices":  [{"platform": "cisco_ios"}],   # neither host nor group
         "commands": ["show version"],
     }, headers=auth_headers)
@@ -27,7 +27,7 @@ def test_submit_requires_host_or_group(client, auth_headers):
 
 def test_submit_without_devices_rejected(client, auth_headers):
     r = client.post("/jobs", json={
-        "job_id": "bad-no-devices", "mode": "audit",
+        "job_id": "bad-no-devices", "mode": "run",
         "devices": [], "commands": ["show version"],
     }, headers=auth_headers)
     assert r.status_code == 422
@@ -35,7 +35,7 @@ def test_submit_without_devices_rejected(client, auth_headers):
 
 def test_submit_without_commands_rejected(client, auth_headers):
     r = client.post("/jobs", json={
-        "job_id": "bad-no-commands", "mode": "audit",
+        "job_id": "bad-no-commands", "mode": "run",
         "devices": [{"host": "10.0.0.1"}], "commands": [],
     }, headers=auth_headers)
     # commands is now optional at the schema level; the application rejects
@@ -45,7 +45,7 @@ def test_submit_without_commands_rejected(client, auth_headers):
 
 def test_autogenerate_job_id(client, auth_headers):
     r = client.post("/jobs", json={
-        "mode": "audit",
+        "mode": "run",
         "devices": [{"host": "10.0.0.1"}],
         "commands": ["show version"],
     }, headers=auth_headers)
@@ -55,7 +55,7 @@ def test_autogenerate_job_id(client, auth_headers):
 
 def test_duplicate_job_id_rejected(client, auth_headers):
     payload = {
-        "job_id": "dup-job-001", "mode": "audit",
+        "job_id": "dup-job-001", "mode": "run",
         "devices": [{"host": "10.0.0.1"}],
         "commands": ["show version"],
     }
@@ -72,7 +72,7 @@ def test_host_only_device_entry(client, auth_headers):
     """{"host": "10.0.0.1"} — direct inventory lookup, no group."""
     r = client.post("/jobs", json={
         "job_id":   "f1-host-only-001",
-        "mode":     "audit",
+        "mode": "run",
         "devices":  [{"host": "10.0.0.1"}],
         "commands": ["show version"],
         "options":  {"timeout_per_device": 5, "max_workers": 5},
@@ -94,7 +94,7 @@ def test_host_and_group_device_entry(client, auth_headers):
     group provides credential fallback."""
     r = client.post("/jobs", json={
         "job_id":   "f2-host-group-001",
-        "mode":     "audit",
+        "mode": "run",
         "devices":  [{"host": "10.0.0.1", "group": "mock_switches"}],
         "commands": ["show version"],
         "options":  {"timeout_per_device": 5, "max_workers": 5},
@@ -117,7 +117,7 @@ def test_group_only_device_entry_expands_all_hosts(client, auth_headers):
     """
     r = client.post("/jobs", json={
         "job_id":   "f3-group-only-001",
-        "mode":     "audit",
+        "mode": "run",
         "devices":  [{"group": "mock_switches"}],
         "commands": ["show version"],
         "options":  {"timeout_per_device": 5, "max_workers": 5},
@@ -136,7 +136,7 @@ def test_group_only_detail_shows_all_hosts(client, auth_headers):
     """Detail endpoint shows individual results for each expanded host."""
     client.post("/jobs", json={
         "job_id":   "f3-group-detail-001",
-        "mode":     "audit",
+        "mode": "run",
         "devices":  [{"group": "mock_switches"}],
         "commands": ["show version"],
         "options":  {"timeout_per_device": 5, "max_workers": 5},
@@ -159,7 +159,7 @@ def test_nonexistent_group_fails_gracefully(client, auth_headers):
     """Unknown group is rejected at submission time with 400."""
     r = client.post("/jobs", json={
         "job_id":   "f3-bad-group-001",
-        "mode":     "audit",
+        "mode": "run",
         "devices":  [{"group": "nonexistent_group_xyz"}],
         "commands": ["show version"],
         "options":  {"timeout_per_device": 5, "max_workers": 5},
@@ -177,7 +177,7 @@ def test_mixed_forms_in_single_job(client, auth_headers):
     """
     r = client.post("/jobs", json={
         "job_id":   "f-mixed-001",
-        "mode":     "audit",
+        "mode": "run",
         "devices":  [
             {"host": "10.0.0.1"},
             {"host": "10.0.0.2", "group": "mock_switches"},
@@ -202,7 +202,7 @@ def test_partial_failure_with_group(client, auth_headers):
     """Mixed group (some succeed, some timeout) → partial_failure."""
     r = client.post("/jobs", json={
         "job_id":   "pf-group-001",
-        "mode":     "audit",
+        "mode": "run",
         "devices":  [
             {"group": "mock_switches"},   # 3 hosts, all succeed
             {"group": "mock_timeouts"},   # 1 host, times out
@@ -231,10 +231,10 @@ def test_list_jobs_returns_list(client, auth_headers):
 
 
 def test_list_jobs_filter_by_mode(client, auth_headers):
-    r = client.get("/jobs?mode=audit", headers=auth_headers)
+    r = client.get("/jobs?mode=run", headers=auth_headers)
     assert r.status_code == 200
     for job in r.json()["jobs"]:
-        assert job["mode"] == "audit"
+        assert job["mode"] == "run"
 
 
 def test_list_jobs_filter_by_status(client, auth_headers):

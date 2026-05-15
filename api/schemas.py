@@ -9,9 +9,8 @@ import uuid
 
 
 class JobMode(str, Enum):
-    audit      = "audit"
-    remediate  = "remediate"
-    workflow   = "workflow"          # ← NEW: per-device subprocess workflow
+    run       = "run"
+    workflow  = "workflow"
 
 
 class JobStatus(str, Enum):
@@ -89,10 +88,10 @@ class JobSubmitRequest(BaseModel):
     job_id: Optional[str] = Field(
         default_factory=lambda: f"job-{uuid.uuid4().hex[:8]}",
     )
-    mode:     JobMode          = Field(JobMode.audit)
+    mode:     JobMode          = Field(JobMode.run)
     devices:  list[DeviceEntry] = Field(..., min_length=1)
     commands: list[str]         = Field(default_factory=list)
-    remediation_commands: Optional[list[str]] = Field(None)
+    config_mode_commands: Optional[list[str]] = Field(None)
     file_transfers:       Optional[list[FileTransferEntry]] = Field(None)
     options:  JobOptions        = Field(default_factory=JobOptions)
     incident: Optional[str]     = Field(None, description="Incident/ticket number for log organisation (e.g. INC12345).")

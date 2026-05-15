@@ -255,7 +255,7 @@ def run_runbook(name: str, body: dict):
     incident = body.get("incident") or None
     request = JobSubmitRequest(
         job_id=job_id,
-        mode=JobMode.audit,
+        mode=JobMode.run,
         devices=device_entries,
         commands=commands,
         options=options,

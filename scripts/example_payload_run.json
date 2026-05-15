@@ -1,8 +1,8 @@
 {
-  "_comment": "Remediation targeting an entire group — all hosts under [core_switches] are updated",
+  "_comment": "Run job targeting an entire group — exec-mode commands plus config-mode commands",
 
-  "job_id": "rem-example-001",
-  "mode": "remediate",
+  "job_id": "run-example-001",
+  "mode": "run",
   "devices": [
     {
       "group": "core_switches"
@@ -11,7 +11,7 @@
   "commands": [
     "show running-config | include ntp"
   ],
-  "remediation_commands": [
+  "config_mode_commands": [
     "ntp server 10.0.0.1",
     "ntp server 10.0.0.2",
     "logging host 10.0.0.50"

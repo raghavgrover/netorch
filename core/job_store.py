@@ -180,9 +180,11 @@ class JobStore:
             ))
 
         counts = db.get_job_summary_counts(job_id)
+        raw_mode = job["mode"]
+        mode_val = self._LEGACY_MODE_MAP.get(raw_mode, raw_mode)
         return JobDetailResponse(
             job_id       = job["job_id"],
-            mode         = JobMode(job["mode"]),
+            mode         = JobMode(mode_val),
             status       = JobStatus(job["status"]),
             started_at   = job["started_at"],
             completed_at = job["completed_at"],
@@ -234,12 +236,16 @@ class JobStore:
     # Internal helpers
     # ------------------------------------------------------------------
 
+    _LEGACY_MODE_MAP = {"audit": "run", "remediate": "run"}
+
     def _row_to_status(self, job: dict) -> JobStatusResponse:
         counts = db.get_job_summary_counts(job["job_id"])
+        raw_mode = job["mode"]
+        mode_val = self._LEGACY_MODE_MAP.get(raw_mode, raw_mode)
         return JobStatusResponse(
             job_id       = job["job_id"],
             status       = JobStatus(job["status"]),
-            mode         = JobMode(job["mode"]),
+            mode         = JobMode(mode_val),
             started_at   = job["started_at"],
             completed_at = job["completed_at"],
             summary      = JobSummary(**counts),
