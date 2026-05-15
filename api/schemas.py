@@ -152,19 +152,13 @@ class WorkflowSubmitResponse(BaseModel):
 
 
 class WorkflowInfo(BaseModel):
-    """Metadata about a single workflow script — returned by GET /workflows."""
+    """Metadata about a single workflow — returned by GET /workflows."""
     name:        str
     description: str
     modified_at: str
     size_bytes:  int
-    parameters:  list[str] = Field(
-        default_factory=list,
-        description=(
-            "Parameter names declared in the script header via "
-            "# PARAM: KEY — description lines. Used by the UI to "
-            "pre-populate the parameters form."
-        ),
-    )
+    parameters:  list[str] = Field(default_factory=list)
+    steps:       list[dict] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------

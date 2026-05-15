@@ -1,0 +1,44 @@
+name: Cisco IOS Patch
+description: Transfer firmware and install on Cisco IOS devices
+parameters:
+  - FIRMWARE_FILE
+  - FIRMWARE_DEST
+
+vars:
+  VERIFY_CMD: show version
+
+steps:
+  - name: Pre-check
+    type: device_commands
+    commands:
+      - show version
+      - dir flash:
+
+  - name: Verify relay file exists
+    type: shell
+    run: once
+    script: |
+      if [ ! -f "{{ FIRMWARE_FILE }}" ]; then
+        echo "ERROR: firmware file not found: {{ FIRMWARE_FILE }}"
+        exit 1
+      fi
+      echo "File found: $(ls -lh {{ FIRMWARE_FILE }})"
+
+  - name: Transfer firmware
+    type: file_transfer
+    local_path: "{{ FIRMWARE_FILE }}"
+    remote_path: "{{ FIRMWARE_DEST }}"
+    post_transfer_commands:
+      - dir flash:
+
+  - name: Post-transfer verification
+    type: shell
+    run: per_device
+    script: |
+      echo "Transfer complete for $TARGET_HOST"
+      echo "Pre-check output was: $STEP_PRE_CHECK_OUTPUT"
+
+  - name: Verify version
+    type: device_commands
+    commands:
+      - "{{ VERIFY_CMD }}"

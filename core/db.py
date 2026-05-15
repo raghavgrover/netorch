@@ -71,12 +71,24 @@ CREATE TABLE IF NOT EXISTS workflow_logs (
     created_at TEXT    NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS workflow_step_outputs (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id     TEXT    NOT NULL,
+    step_name  TEXT    NOT NULL,
+    host       TEXT,
+    output     TEXT,
+    exit_code  INTEGER,
+    created_at TEXT    NOT NULL,
+    FOREIGN KEY (job_id) REFERENCES jobs(job_id)
+);
+
 CREATE INDEX IF NOT EXISTS idx_jobs_status       ON jobs(status);
 CREATE INDEX IF NOT EXISTS idx_jobs_started_at   ON jobs(started_at);
 CREATE INDEX IF NOT EXISTS idx_devices_job        ON devices(job_id);
 CREATE INDEX IF NOT EXISTS idx_commands_device    ON commands(job_id, host);
 CREATE INDEX IF NOT EXISTS idx_wflogs_job_host    ON workflow_logs(job_id, host);
 CREATE INDEX IF NOT EXISTS idx_wflogs_job         ON workflow_logs(job_id);
+CREATE INDEX IF NOT EXISTS idx_wfsteps_job        ON workflow_step_outputs(job_id);
 """
 
 
@@ -311,6 +323,55 @@ class Database:
             (job_id,),
         )
         return [r["host"] for r in rows]
+
+    # ── Workflow step outputs ─────────────────────────────────────────────────
+
+    def insert_step_output(
+        self,
+        job_id: str,
+        step_name: str,
+        host: Optional[str],
+        output: str,
+        exit_code: int,
+    ) -> None:
+        from datetime import datetime, timezone
+        self.execute(
+            "INSERT INTO workflow_step_outputs "
+            "(job_id, step_name, host, output, exit_code, created_at) "
+            "VALUES (?,?,?,?,?,?)",
+            (job_id, step_name, host, output, exit_code,
+             datetime.now(timezone.utc).isoformat()),
+        )
+
+    def get_step_outputs(self, job_id: str) -> list[dict]:
+        rows = self.query(
+            "SELECT step_name, host, output, exit_code, created_at "
+            "FROM workflow_step_outputs WHERE job_id=? ORDER BY id ASC",
+            (job_id,),
+        )
+        return [dict(r) for r in rows]
+
+    def get_step_output(
+        self,
+        job_id: str,
+        step_name: str,
+        host: Optional[str] = None,
+    ) -> Optional[dict]:
+        if host is None:
+            row = self.query_one(
+                "SELECT step_name, host, output, exit_code, created_at "
+                "FROM workflow_step_outputs WHERE job_id=? AND step_name=? "
+                "AND host IS NULL",
+                (job_id, step_name),
+            )
+        else:
+            row = self.query_one(
+                "SELECT step_name, host, output, exit_code, created_at "
+                "FROM workflow_step_outputs WHERE job_id=? AND step_name=? "
+                "AND host=?",
+                (job_id, step_name, host),
+            )
+        return dict(row) if row else None
 
     # ── Job read operations ───────────────────────────────────────────────────
 

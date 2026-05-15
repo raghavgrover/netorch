@@ -1,2 +1,2 @@
 hostname
-uptime
+date

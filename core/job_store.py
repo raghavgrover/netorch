@@ -140,6 +140,10 @@ class JobStore:
         """Return the distinct device hosts that have written log lines."""
         return db.get_workflow_log_hosts(job_id)
 
+    def get_step_outputs(self, job_id: str) -> list[dict]:
+        """Return all step outputs for a workflow job."""
+        return db.get_step_outputs(job_id)
+
     # ------------------------------------------------------------------
     # Read side
     # ------------------------------------------------------------------

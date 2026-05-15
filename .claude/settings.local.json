@@ -20,7 +20,28 @@
       "Bash(journalctl -u netorch -n 150 --no-pager)",
       "Bash(journalctl -u netorch.service -n 150 --no-pager)",
       "Bash(journalctl -u netorch-ui -n 100 --no-pager)",
-      "Bash(systemctl is-active *)"
+      "Bash(systemctl is-active *)",
+      "Bash(git -C /opt/netorch log --oneline -5)",
+      "Bash(git -C /opt/netorch-ui log --oneline -5)",
+      "Bash(git -C /opt/netorch add api/routes/runbooks.py)",
+      "Bash(git -C /opt/netorch commit -m ' *)",
+      "Bash(git -C /opt/netorch diff --name-only)",
+      "Bash(git -C /opt/netorch-ui diff --name-only)",
+      "Bash(git -C /opt/netorch-ui add app.py netorch_client.py static/js/api.js static/js/runbooks.js templates/base.html)",
+      "Bash(git -C /opt/netorch-ui commit -m ' *)",
+      "Bash(git -C /opt/netorch push)",
+      "Bash(git -C /opt/netorch-ui push)",
+      "Bash(git -C /opt/netorch-ui add static/js/runbooks.js templates/base.html)",
+      "Bash(git -C /opt/netorch-ui add templates/base.html)",
+      "Bash(git -C /opt/netorch status --short)",
+      "Bash(git -C /opt/netorch-ui status --short)",
+      "Bash(git *)",
+      "Bash(pip show *)",
+      "Bash(/opt/netorch/venv/bin/pip show *)",
+      "Bash(python3 -c \"import yaml; print\\(yaml.__version__\\)\")",
+      "Bash(/opt/netorch/venv/bin/python3 -c \"import yaml; print\\(yaml.__version__\\)\")",
+      "Bash(rm -f /usr/local/bin/netorch_exec /usr/local/bin/netorch_once)",
+      "Bash(rm -f /opt/netorch/workflows/*.sh)"
     ]
   }
 }

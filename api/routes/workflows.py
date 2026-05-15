@@ -1,24 +1,23 @@
 """
 api/routes/workflows.py — Workflow management endpoints.
 
-Workflows differ from runbooks in one fundamental way:
-  - Runbooks are lists of device CLI commands (parsed and sent as SSH commands)
-  - Workflows are shell scripts that run on the relay server, with full
-    freedom to call local tools, REST APIs, and netorch_exec for device steps
+Workflows are YAML files stored under /opt/netorch/workflows/.
+Each file defines a name, description, parameters, vars, and a list of steps.
 
 Endpoints
 ─────────
-GET  /workflows                          List all .sh scripts in WORKFLOWS_DIR
-GET  /workflows/{name}                   Metadata for a single workflow script
-POST /workflows                          Create a new workflow script
-PUT  /workflows/{name}                   Overwrite an existing workflow script
-POST /workflows/{name}/run               Submit a workflow job
-GET  /workflows/{name}/log/{job_id}      Full log for all devices (polling)
-GET  /workflows/{name}/log/{job_id}/{host}  Per-device log (polling, since_id)
+GET  /workflows                              List all .yaml workflow files
+GET  /workflows/{name}                       Full metadata + raw_content
+POST /workflows                              Create a new .yaml file
+PUT  /workflows/{name}                       Overwrite a .yaml file
+DELETE /workflows/{name}                     Delete a .yaml file
+POST /workflows/{name}/run                   Submit a workflow job
+GET  /workflows/{name}/steps/{job_id}        Step-by-step output for a job
+GET  /workflows/{name}/log/{job_id}          Live log (all devices)
+GET  /workflows/{name}/log/{job_id}/{host}   Live log (single device)
 """
 from __future__ import annotations
 
-import re
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -29,10 +28,10 @@ from pydantic import BaseModel
 
 from api.schemas import (
     DeviceEntry, WorkflowOptions, WorkflowSubmitRequest,
-    WorkflowSubmitResponse, WorkflowInfo, JobStatus,
-    JobMode,
+    WorkflowSubmitResponse, JobStatus, JobMode,
 )
-from core.workflow_executor import submit_workflow, active_workflow_count
+from core.workflow_runner import submit_workflow, active_workflow_count
+from core.workflow_parser import parse as parse_workflow, WorkflowParseError
 from core.job_store import store
 from core.config import logging_cfg, executor as exec_cfg
 from core.logger import get_logger
@@ -51,70 +50,42 @@ def _workflows_dir() -> Path:
     return WORKFLOWS_DIR
 
 
-def _parse_workflow(path: Path) -> dict:
-    """
-    Read a workflow script and return metadata.
+def _safe_name(name: str) -> None:
+    """Reject path traversal and wrong extension."""
+    if "/" in name or name.startswith("."):
+        raise HTTPException(status_code=400, detail="Invalid workflow name.")
+    if not name.endswith(".yaml"):
+        raise HTTPException(status_code=400, detail="Workflow name must end in .yaml")
 
-    Extracts:
-      description — first non-shebang comment line
-      parameters  — lines matching "# PARAM: KEY — description"
-                    These are declared by the script author to tell the UI
-                    what parameters the script expects.
 
-    Example header the script author writes:
-        #!/bin/bash
-        # Add a NAD to ISE and configure TACACS on the IOS device.
-        #
-        # PARAM: ISE_HOSTNAME — IP or FQDN of the Cisco ISE server
-        # PARAM: TACACS_KEY — Shared secret for TACACS authentication
-        # PARAM: AAA_GROUP_NAME — AAA server group name to create on device
-    """
-    try:
-        text = path.read_text(encoding="utf-8", errors="replace")
-    except OSError as exc:
-        raise HTTPException(status_code=500, detail=f"Cannot read workflow: {exc}")
-
-    lines = text.splitlines()
-
-    description = ""
-    parameters: list[dict] = []
-
-    for line in lines:
-        stripped = line.strip()
-        if stripped.startswith("#!"):
-            continue
-        if not stripped.startswith("#"):
-            break  # stop at first non-comment line
-
-        # First plain comment becomes the description
-        if not description and stripped.startswith("#"):
-            candidate = stripped.lstrip("#").strip()
-            if candidate and not candidate.startswith("PARAM:"):
-                description = candidate
-
-        # Parse PARAM declarations
-        param_match = re.match(r"#\s*PARAM:\s*(\w+)\s*(?:[—\-]+\s*(.*))?", stripped)
-        if param_match:
-            parameters.append({
-                "name":        param_match.group(1),
-                "description": (param_match.group(2) or "").strip(),
-            })
-
+def _workflow_meta(path: Path) -> dict:
+    """Return metadata dict for a workflow file, with graceful fallback on parse error."""
     st = path.stat()
     modified = datetime.fromtimestamp(st.st_mtime, tz=timezone.utc).isoformat()
-
-    return {
+    base = {
+        "filename":    path.name,
         "name":        path.name,
-        "description": description,
+        "description": "",
         "modified_at": modified,
         "size_bytes":  st.st_size,
-        "parameters":  parameters,
-        "raw_content": text,
+        "parameters":  [],
+        "steps":       [],
     }
+    try:
+        wf = parse_workflow(path)
+        base["name"]        = wf.name
+        base["description"] = wf.description
+        base["parameters"]  = wf.parameters
+        base["steps"] = [
+            {"name": s.name, "type": s.type}
+            for s in wf.steps
+        ]
+    except WorkflowParseError:
+        pass  # return minimal metadata if YAML is malformed
+    return base
 
 
 def _expand_devices(devices: list[DeviceEntry]) -> list[DeviceEntry]:
-    """Expand group-only DeviceEntry objects into individual host entries."""
     expanded: list[DeviceEntry] = []
     for entry in devices:
         if entry.host:
@@ -141,49 +112,74 @@ def _expand_devices(devices: list[DeviceEntry]) -> list[DeviceEntry]:
     return expanded
 
 
-def _safe_name(name: str) -> None:
-    """Reject path traversal attempts."""
-    if "/" in name or name.startswith("."):
-        raise HTTPException(status_code=400, detail="Invalid workflow name.")
-
-
-# ── Routes ────────────────────────────────────────────────────────────────────
+# ── CRUD routes ───────────────────────────────────────────────────────────────
 
 @router.get("", summary="List all workflow scripts in WORKFLOWS_DIR")
 def list_workflows():
     d = _workflows_dir()
     workflows = []
-    for p in sorted(d.glob("*.sh")):
+    for p in sorted(d.glob("*.yaml")):
         try:
-            wf = _parse_workflow(p)
-            wf.pop("raw_content", None)   # metadata only in listing
-            workflows.append(wf)
-        except HTTPException:
-            pass  # skip unreadable files silently
+            workflows.append(_workflow_meta(p))
+        except Exception:
+            pass
     return {"workflows": workflows, "total": len(workflows)}
+
+
+@router.get("/{name}", summary="Get workflow metadata, steps, and raw content")
+def get_workflow(name: str):
+    _safe_name(name)
+    path = _workflows_dir() / name
+    if not path.exists():
+        raise HTTPException(status_code=404, detail=f"Workflow '{name}' not found.")
+    meta = _workflow_meta(path)
+    raw  = path.read_text(encoding="utf-8", errors="replace")
+    meta["raw_content"] = raw
+    try:
+        wf = parse_workflow(path)
+        meta["steps"] = [
+            {
+                "name":     s.name,
+                "type":     s.type,
+                "run":      s.run,
+                "commands": s.commands,
+                "script":   s.script,
+                "local_path":  s.local_path,
+                "remote_path": s.remote_path,
+                "runbook":     s.runbook,
+            }
+            for s in wf.steps
+        ]
+        meta["vars"]        = wf.vars
+        meta["parse_error"] = None
+    except WorkflowParseError as e:
+        meta["parse_error"] = str(e)
+    return meta
 
 
 class WorkflowWriteBody(BaseModel):
     content: str
+
 
 class WorkflowCreateBody(BaseModel):
     filename: str
     content:  str
 
 
-@router.post("", status_code=201, summary="Create a new workflow script")
+@router.post("", status_code=201, summary="Create a new workflow file")
 def create_workflow(body: WorkflowCreateBody):
     name = body.filename.strip()
     if not name:
         raise HTTPException(status_code=400, detail="Filename is required.")
-    if not name.endswith(".sh"):
-        raise HTTPException(status_code=400, detail="Filename must end in .sh")
-    _safe_name(name)
+    if not name.endswith(".yaml"):
+        raise HTTPException(status_code=400, detail="Filename must end in .yaml")
+    if "/" in name or name.startswith("."):
+        raise HTTPException(status_code=400, detail="Invalid filename.")
     path = _workflows_dir() / name
     if path.exists():
         raise HTTPException(
             status_code=409,
-            detail=f"'{name}' already exists. Use PUT /workflows/{name} to overwrite.",
+            detail=f"'{name}' already exists. Use PUT to overwrite.",
         )
     try:
         path.write_text(body.content, encoding="utf-8")
@@ -192,11 +188,9 @@ def create_workflow(body: WorkflowCreateBody):
     return {"name": name, "created": True}
 
 
-@router.put("/{name}", summary="Overwrite a workflow script with new content")
+@router.put("/{name}", summary="Overwrite a workflow file")
 def put_workflow(name: str, body: WorkflowWriteBody):
     _safe_name(name)
-    if not name.endswith(".sh"):
-        raise HTTPException(status_code=400, detail="Workflow name must end in .sh")
     path = _workflows_dir() / name
     try:
         path.write_text(body.content, encoding="utf-8")
@@ -205,7 +199,7 @@ def put_workflow(name: str, body: WorkflowWriteBody):
     return {"name": name, "saved": True}
 
 
-@router.delete("/{name}", summary="Delete a workflow script")
+@router.delete("/{name}", summary="Delete a workflow file")
 def delete_workflow(name: str):
     _safe_name(name)
     path = _workflows_dir() / name
@@ -218,14 +212,7 @@ def delete_workflow(name: str):
     return {"name": name, "deleted": True}
 
 
-@router.get("/{name}", summary="Get workflow script metadata and declared parameters")
-def get_workflow(name: str):
-    _safe_name(name)
-    path = _workflows_dir() / name
-    if not path.exists():
-        raise HTTPException(status_code=404, detail=f"Workflow '{name}' not found.")
-    return _parse_workflow(path)
-
+# ── Execution routes ──────────────────────────────────────────────────────────
 
 @router.post(
     "/{name}/run",
@@ -234,43 +221,27 @@ def get_workflow(name: str):
     summary="Submit a workflow job against the specified devices",
 )
 def run_workflow(name: str, body: WorkflowSubmitRequest):
-    """
-    Submit a workflow script to run against each device in `devices`.
-
-    One bash subprocess is spawned per device in parallel (up to
-    options.max_workers). Each subprocess receives:
-      - All device context as env vars (TARGET_HOST, DEVICE_PLATFORM, etc.)
-      - All user-supplied `parameters` as env vars
-      - NETORCH_API_URL and NETORCH_TOKEN for netorch_exec callbacks
-
-    Poll GET /jobs/{job_id} for status. Live per-device output is available
-    at GET /workflows/{name}/log/{job_id} while the job is running.
-    """
     _safe_name(name)
-
-    # Verify script exists
     path = _workflows_dir() / name
     if not path.exists():
         raise HTTPException(status_code=404, detail=f"Workflow '{name}' not found.")
 
-    # Check queue capacity
+    try:
+        parse_workflow(path)   # validate before queuing
+    except WorkflowParseError as e:
+        raise HTTPException(status_code=422, detail=f"Invalid workflow YAML: {e}")
+
     if active_workflow_count() >= exec_cfg.max_queue_depth:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=f"Job queue full ({exec_cfg.max_queue_depth} max). Retry shortly.",
         )
 
-    # Guard duplicate job_id (extremely unlikely but consistent with jobs.py)
-    if store.exists(body.job_id):
-        body = body.model_copy(update={"job_id": f"wf-{uuid.uuid4().hex[:8]}"})
+    job_id = body.job_id or f"wf-{uuid.uuid4().hex[:8]}"
+    if store.exists(job_id):
+        job_id = f"wf-{uuid.uuid4().hex[:8]}"
 
-    # Expand groups to individual hosts
     expanded_devices = _expand_devices(body.devices)
-
-    # Build job_id with script name prefix for visibility in job listings
-    stem = name[:-3] if name.endswith(".sh") else name
-    job_id = body.job_id or f"wf-{stem}-{uuid.uuid4().hex[:6]}"
-
     incident = body.incident or None
 
     submit_workflow(
@@ -282,13 +253,8 @@ def run_workflow(name: str, body: WorkflowSubmitRequest):
         incident=incident,
     )
 
-    log.info(
-        "workflow_job_accepted",
-        workflow=name,
-        job_id=job_id,
-        device_count=len(expanded_devices),
-        parameters=list(body.parameters.keys()),
-    )
+    log.info("workflow_job_accepted", workflow=name, job_id=job_id,
+             device_count=len(expanded_devices))
 
     log_subdir = (logging_cfg.log_dir / incident) if incident else logging_cfg.log_dir
     return WorkflowSubmitResponse(
@@ -301,42 +267,36 @@ def run_workflow(name: str, body: WorkflowSubmitRequest):
 
 
 @router.get(
+    "/{name}/steps/{job_id}",
+    summary="Return step-by-step output for a workflow job",
+)
+def get_workflow_steps(name: str, job_id: str):
+    if not store.exists(job_id):
+        raise HTTPException(status_code=404, detail=f"Job '{job_id}' not found.")
+    outputs = store.get_step_outputs(job_id)
+    job_status = store.get_status(job_id)
+    return {
+        "job_id":  job_id,
+        "status":  job_status.status.value if job_status else "unknown",
+        "outputs": outputs,
+    }
+
+
+@router.get(
     "/{name}/log/{job_id}",
-    summary="Poll workflow log for all devices (supports incremental since_id)",
+    summary="Poll workflow log for all devices",
 )
 def get_workflow_log_all(
     name: str,
     job_id: str,
-    since_id: int = Query(0, ge=0, description="Return only lines with id > since_id. Pass 0 for all."),
+    since_id: int = Query(0, ge=0),
 ):
-    """
-    Returns streaming log output from all device subprocesses for a workflow job.
-
-    Designed for incremental polling:
-      1. First call: GET /workflows/{name}/log/{job_id}          → returns all lines so far + last_id
-      2. Subsequent: GET /workflows/{name}/log/{job_id}?since_id=<last_id> → returns only new lines
-
-    Response:
-    {
-      "job_id": "wf-abc123",
-      "status": "running",
-      "lines": [
-        {"id": 1, "host": "10.1.1.1", "line": "[10.1.1.1] Step 1: ...", "created_at": "..."},
-        ...
-      ],
-      "last_id": 42,
-      "hosts": ["10.1.1.1", "10.1.1.2"]
-    }
-    """
     if not store.exists(job_id):
         raise HTTPException(status_code=404, detail=f"Job '{job_id}' not found.")
-
     job_status = store.get_status(job_id)
     lines = store.get_workflow_log_all(job_id, since_id=since_id)
     hosts = store.get_workflow_log_hosts(job_id)
-
     last_id = lines[-1]["id"] if lines else since_id
-
     return {
         "job_id":  job_id,
         "status":  job_status.status.value if job_status else "unknown",
@@ -354,19 +314,13 @@ def get_workflow_log_device(
     name: str,
     job_id: str,
     host: str,
-    since_id: int = Query(0, ge=0, description="Return only lines with id > since_id."),
+    since_id: int = Query(0, ge=0),
 ):
-    """
-    Per-device log polling endpoint. Same incremental since_id mechanism as the
-    all-devices endpoint but filtered to a single host.
-    """
     if not store.exists(job_id):
         raise HTTPException(status_code=404, detail=f"Job '{job_id}' not found.")
-
     job_status = store.get_status(job_id)
     lines = store.get_workflow_log(job_id, host, since_id=since_id)
     last_id = lines[-1]["id"] if lines else since_id
-
     return {
         "job_id":  job_id,
         "host":    host,
