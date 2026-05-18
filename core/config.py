@@ -86,8 +86,9 @@ class BigFixConfig:
         bf = raw.get("bigfix", {})
         self.server_url:    str  = bf.get("server_url", "")
         self.username:      str  = bf.get("username", "")
+        self.password:      str  = bf.get("password", "")   # optional inline; prefer OpenBao/env
         self.verify_ssl:    bool = bf.get("verify_ssl", False)
-        self.scan_point_id: int  = bf.get("scan_point_id", 0)
+        self.scan_point_id: str  = str(bf.get("scan_point_id", "0"))
         self.scan_point_os: str  = bf.get("scan_point_os", "linux")
 
 

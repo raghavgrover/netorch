@@ -133,6 +133,11 @@ def _get_bigfix_password() -> str | None:
         log.info("bigfix_password_from_env")
         return pw
 
+    # 3. Try inline password in netorch.toml [bigfix] section
+    if bigfix_cfg.password:
+        log.info("bigfix_password_from_toml")
+        return bigfix_cfg.password
+
     return None
 
 
@@ -403,7 +408,7 @@ def trigger_scan(body: TriggerScanRequest) -> TriggerScanResponse:
         )
 
     # ── Check scan_point_id configured ───────────────────────────────────────
-    if not bigfix_cfg.scan_point_id:
+    if not bigfix_cfg.scan_point_id or bigfix_cfg.scan_point_id == "0":
         return TriggerScanResponse(
             error="scan_point_id not configured in [bigfix] section of netorch.toml"
         )
