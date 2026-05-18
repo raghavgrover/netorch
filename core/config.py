@@ -88,6 +88,7 @@ class BigFixConfig:
         self.username:      str  = bf.get("username", "")
         self.verify_ssl:    bool = bf.get("verify_ssl", False)
         self.scan_point_id: int  = bf.get("scan_point_id", 0)
+        self.scan_point_os: str  = bf.get("scan_point_os", "linux")
 
 
 class DatabaseConfig:

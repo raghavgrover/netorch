@@ -277,3 +277,13 @@ class AddToInventoryResponse(BaseModel):
     file:  str = ""
     group: str = ""
     error: Optional[str] = None
+
+
+class TriggerScanRequest(BaseModel):
+    subnet: str
+
+
+class TriggerScanResponse(BaseModel):
+    action_id: Optional[int] = None
+    message:   str = ""
+    error:     Optional[str] = None

@@ -18,16 +18,20 @@ import re
 from urllib.parse import urlparse
 
 import httpx
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 
 import configparser
 import grp
+import ipaddress
 import shutil
 import stat
+import xml.etree.ElementTree as ET
+from datetime import datetime
 
 from api.schemas import (
     DiscoveredDevice, DiscoveryResponse,
     AddToInventoryRequest, AddToInventoryResponse,
+    TriggerScanRequest, TriggerScanResponse,
 )
 from core.config import bigfix as bigfix_cfg, inventory as inventory_cfg
 from core.logger import get_logger
@@ -133,6 +137,15 @@ def _get_bigfix_password() -> str | None:
 
 
 # ── Route ─────────────────────────────────────────────────────────────────────
+
+@router.get("/config", summary="Return non-sensitive BigFix discovery configuration")
+def get_discovery_config():
+    return {
+        "scan_point_id": bigfix_cfg.scan_point_id,
+        "server_url":    bigfix_cfg.server_url,
+        "configured":    bool(bigfix_cfg.server_url),
+    }
+
 
 @router.get("/devices", response_model=DiscoveryResponse,
             summary="Fetch unmanaged assets from BigFix Asset Discovery")
@@ -345,4 +358,136 @@ def add_to_inventory(body: AddToInventoryRequest) -> AddToInventoryResponse:
         added=len(body.devices),
         file=display_file,
         group=body.group_name,
+    )
+
+
+# ── Subnet validation helper ──────────────────────────────────────────────────
+
+def _validate_subnet(subnet: str) -> bool:
+    """Accept CIDR (10.0.0.0/24) or range (10.0.0.1-254)."""
+    subnet = subnet.strip()
+    # CIDR
+    try:
+        ipaddress.ip_network(subnet, strict=False)
+        return True
+    except ValueError:
+        pass
+    # Range: x.x.x.x-y or x.x.x.x-x.x.x.y
+    parts = subnet.split("-")
+    if len(parts) == 2:
+        try:
+            ipaddress.ip_address(parts[0].strip())
+            end = parts[1].strip()
+            # end may be just the last octet or a full IP
+            if "." not in end:
+                int(end)   # just a number
+            else:
+                ipaddress.ip_address(end)
+            return True
+        except (ValueError, AttributeError):
+            pass
+    return False
+
+
+@router.post("/trigger-scan", response_model=TriggerScanResponse,
+             summary="Create a BigFix Action to run an nmap scan on the Scan Point")
+def trigger_scan(body: TriggerScanRequest) -> TriggerScanResponse:
+    subnet = body.subnet.strip()
+
+    # ── Validate subnet ───────────────────────────────────────────────────────
+    if not _validate_subnet(subnet):
+        raise HTTPException(
+            status_code=422,
+            detail=f"Invalid subnet or range: '{subnet}'. "
+                   "Use CIDR notation (10.0.1.0/24) or range (10.0.1.1-254).",
+        )
+
+    # ── Check scan_point_id configured ───────────────────────────────────────
+    if not bigfix_cfg.scan_point_id:
+        return TriggerScanResponse(
+            error="scan_point_id not configured in [bigfix] section of netorch.toml"
+        )
+
+    # ── Resolve password ──────────────────────────────────────────────────────
+    if not bigfix_cfg.server_url:
+        return TriggerScanResponse(
+            error="BigFix not configured. Set [bigfix] server_url in netorch.toml."
+        )
+
+    password = _get_bigfix_password()
+    if not password:
+        return TriggerScanResponse(
+            error=(
+                "BigFix password not found. Store it in OpenBao at "
+                "secret/netorch/bigfix (field: password) or set "
+                "BIGFIX_PASSWORD environment variable."
+            )
+        )
+
+    # ── Build nmap output path ────────────────────────────────────────────────
+    ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    if bigfix_cfg.scan_point_os.lower() == "windows":
+        output_path = f"C:\\Temp\\netorch_nmap_{ts}.xml"
+    else:
+        output_path = f"/tmp/netorch_nmap_{ts}.xml"
+
+    # ── Build Action XML ──────────────────────────────────────────────────────
+    action_xml = f"""<?xml version="1.0" encoding="UTF-8"?>
+<BES>
+  <SingleAction>
+    <Title>netorch: Run Nmap Scan - {subnet}</Title>
+    <Relevance>true</Relevance>
+    <ActionScript MIMEType="application/x-Fixlet-Windows-Shell">waithidden nmap -sV -O --host-timeout 60s {subnet} -oX &quot;{output_path}&quot;</ActionScript>
+    <Target>
+      <ComputerID>{bigfix_cfg.scan_point_id}</ComputerID>
+    </Target>
+    <Settings>
+      <HasTimeRange>false</HasTimeRange>
+      <HasStartTime>false</HasStartTime>
+      <HasEndTime>false</HasEndTime>
+      <PreActionShowUI>false</PreActionShowUI>
+      <HasMessageTemplate>false</HasMessageTemplate>
+    </Settings>
+  </SingleAction>
+</BES>"""
+
+    # ── POST to BigFix /api/actions ───────────────────────────────────────────
+    api_url = f"{bigfix_cfg.server_url.rstrip('/')}/api/actions"
+    try:
+        with httpx.Client(verify=bigfix_cfg.verify_ssl, timeout=30) as client:
+            resp = client.post(
+                api_url,
+                content=action_xml.encode("utf-8"),
+                headers={"Content-Type": "application/xml"},
+                auth=(bigfix_cfg.username, password),
+            )
+            resp.raise_for_status()
+            resp_text = resp.text
+    except httpx.HTTPError as e:
+        log.warning("bigfix_trigger_scan_error", error=str(e))
+        return TriggerScanResponse(error=f"BigFix API unreachable: {e}")
+    except Exception as e:
+        return TriggerScanResponse(error=f"Request failed: {e}")
+
+    # ── Parse Action ID from response XML ─────────────────────────────────────
+    action_id: int | None = None
+    try:
+        root = ET.fromstring(resp_text)
+        # BigFix returns: <BESAPI><Action ...><ID>12345</ID>...
+        id_el = root.find(".//Action/ID") or root.find(".//ID")
+        if id_el is not None and id_el.text:
+            action_id = int(id_el.text.strip())
+    except Exception as e:
+        log.warning("bigfix_action_parse_error", error=str(e), body=resp_text[:500])
+
+    log.info("bigfix_scan_triggered",
+             subnet=subnet, scan_point_id=bigfix_cfg.scan_point_id,
+             action_id=action_id)
+
+    return TriggerScanResponse(
+        action_id=action_id,
+        message=(
+            f"Scan triggered on BigFix Scan Point (Computer ID {bigfix_cfg.scan_point_id}). "
+            "Results will appear in the Discovery table within 15–30 minutes."
+        ),
     )
