@@ -80,6 +80,16 @@ class RateLimitConfig:
         self.job_submissions_per_minute:int = raw["ratelimit"]["job_submissions_per_minute"]
 
 
+class BigFixConfig:
+    """Reads the optional [bigfix] section from netorch.toml."""
+    def __init__(self, raw: dict):
+        bf = raw.get("bigfix", {})
+        self.server_url:    str  = bf.get("server_url", "")
+        self.username:      str  = bf.get("username", "")
+        self.verify_ssl:    bool = bf.get("verify_ssl", False)
+        self.scan_point_id: int  = bf.get("scan_point_id", 0)
+
+
 class DatabaseConfig:
     """
     Reads the optional [database] section from netorch.toml.
@@ -106,8 +116,9 @@ def _build_all():
     _logging     = LoggingConfig(raw)
     _ratelimit   = RateLimitConfig(raw)
     _database    = DatabaseConfig(raw, config_path)
+    _bigfix      = BigFixConfig(raw)
     _logging.log_dir.mkdir(parents=True, exist_ok=True)
-    return _server, _executor, _inventory, _logging, _ratelimit, _database
+    return _server, _executor, _inventory, _logging, _ratelimit, _database, _bigfix
 
 
-server, executor, inventory, logging_cfg, ratelimit, database = _build_all()
+server, executor, inventory, logging_cfg, ratelimit, database, bigfix = _build_all()

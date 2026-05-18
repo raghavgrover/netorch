@@ -232,3 +232,26 @@ class SystemStatsResponse(BaseModel):
     active_jobs:     int
     max_queue_depth: int
     version:         str
+
+
+# ---------------------------------------------------------------------------
+# Discovery
+# ---------------------------------------------------------------------------
+
+class DiscoveredDevice(BaseModel):
+    ip:                str
+    mac:               str = ""
+    hostname:          str = ""
+    os:                str = ""
+    device_type:       str = ""
+    open_ports:        str = ""
+    scan_time:         str = ""
+    inferred_platform: str = "unknown"
+    in_inventory:      bool = False
+
+
+class DiscoveryResponse(BaseModel):
+    devices:       list[DiscoveredDevice] = []
+    total:         int = 0
+    bigfix_server: str = ""
+    error:         Optional[str] = None

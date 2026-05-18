@@ -19,7 +19,8 @@ from api.routes.logs       import router as logs_router
 from api.routes.devices    import router as devices_router
 from api.routes.inventory  import router as inventory_router
 from api.routes.runbooks   import router as runbooks_router
-from api.routes.workflows  import router as workflows_router   # ← NEW
+from api.routes.workflows  import router as workflows_router
+from api.routes.discovery  import router as discovery_router
 from core.config import server
 from core.executor import active_job_count
 from core.config import executor as exec_cfg
@@ -61,7 +62,8 @@ app.include_router(logs_router,      dependencies=[Depends(require_auth)])
 app.include_router(devices_router,   dependencies=[Depends(require_auth)])
 app.include_router(inventory_router, dependencies=[Depends(require_auth)])
 app.include_router(runbooks_router,  dependencies=[Depends(require_auth)])
-app.include_router(workflows_router, dependencies=[Depends(require_auth)])  # ← NEW
+app.include_router(workflows_router, dependencies=[Depends(require_auth)])
+app.include_router(discovery_router, prefix="/discovery", dependencies=[Depends(require_auth)])
 
 
 @app.get("/health", tags=["system"], summary="Health check — no auth required")
