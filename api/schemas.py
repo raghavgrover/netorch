@@ -255,3 +255,25 @@ class DiscoveryResponse(BaseModel):
     total:         int = 0
     bigfix_server: str = ""
     error:         Optional[str] = None
+
+
+class AddToInventoryDevice(BaseModel):
+    ip:       str
+    hostname: str = ""
+    platform: str = "unknown"
+    port:     int = 22
+
+
+class AddToInventoryRequest(BaseModel):
+    devices:        list[AddToInventoryDevice]
+    target:         str   # "existing" | "new"
+    inventory_file: str = ""   # required if target=existing
+    new_filename:   str = ""   # required if target=new
+    group_name:     str = "discovered"
+
+
+class AddToInventoryResponse(BaseModel):
+    added: int = 0
+    file:  str = ""
+    group: str = ""
+    error: Optional[str] = None

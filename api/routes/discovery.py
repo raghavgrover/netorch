@@ -20,10 +20,20 @@ from urllib.parse import urlparse
 import httpx
 from fastapi import APIRouter
 
-from api.schemas import DiscoveredDevice, DiscoveryResponse
-from core.config import bigfix as bigfix_cfg
+import configparser
+import grp
+import shutil
+import stat
+
+from api.schemas import (
+    DiscoveredDevice, DiscoveryResponse,
+    AddToInventoryRequest, AddToInventoryResponse,
+)
+from core.config import bigfix as bigfix_cfg, inventory as inventory_cfg
 from core.logger import get_logger
 from secrets.inventory import inventory_client
+
+_GROUP_RE = re.compile(r'^[a-zA-Z0-9_-]+$')
 
 log = get_logger("api.discovery")
 router = APIRouter(tags=["discovery"])
@@ -227,4 +237,112 @@ def get_discovery_devices() -> DiscoveryResponse:
         devices=devices,
         total=len(devices),
         bigfix_server=bigfix_server,
+    )
+
+
+@router.post("/add-to-inventory", response_model=AddToInventoryResponse,
+             summary="Add discovered devices to a netorch inventory file")
+def add_to_inventory(body: AddToInventoryRequest) -> AddToInventoryResponse:
+    # ── Validate group name ───────────────────────────────────────────────────
+    if not body.group_name or not _GROUP_RE.match(body.group_name):
+        raise HTTPException(
+            status_code=400,
+            detail="group_name must contain only letters, digits, underscores, or hyphens.",
+        )
+
+    if not body.devices:
+        raise HTTPException(status_code=400, detail="No devices provided.")
+
+    inv_dir = inventory_cfg.path if inventory_cfg.path.is_dir() else inventory_cfg.path.parent
+
+    # ── Resolve target file ───────────────────────────────────────────────────
+    if body.target == "existing":
+        fname = body.inventory_file.strip()
+        if not fname:
+            raise HTTPException(status_code=400, detail="inventory_file is required for target=existing.")
+        if "/" in fname or ".." in fname:
+            raise HTTPException(status_code=400, detail="Invalid inventory_file name.")
+        target_path = inv_dir / fname
+        if not target_path.exists():
+            raise HTTPException(
+                status_code=404,
+                detail=f"Inventory file '{fname}' not found.",
+            )
+        display_file = fname
+
+    elif body.target == "new":
+        fname = body.new_filename.strip()
+        if not fname:
+            raise HTTPException(status_code=400, detail="new_filename is required for target=new.")
+        if not fname.endswith(".ini"):
+            raise HTTPException(status_code=400, detail="new_filename must end in .ini")
+        if "/" in fname or ".." in fname:
+            raise HTTPException(status_code=400, detail="Invalid new_filename.")
+        target_path = inv_dir / fname
+        display_file = fname
+
+    else:
+        raise HTTPException(status_code=400, detail="target must be 'existing' or 'new'.")
+
+    # ── Read existing file (or start fresh) ───────────────────────────────────
+    parser = configparser.RawConfigParser(allow_no_value=True)
+    parser.optionxform = str   # preserve case
+
+    existing_content = ""
+    if target_path.exists():
+        try:
+            existing_content = target_path.read_text(encoding="utf-8")
+            parser.read_string(existing_content)
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Cannot read inventory file: {e}")
+
+    # Check group doesn't already exist
+    if parser.has_section(body.group_name):
+        raise HTTPException(
+            status_code=409,
+            detail=f"Group '[{body.group_name}]' already exists in {display_file}.",
+        )
+
+    # ── Build new section lines ───────────────────────────────────────────────
+    lines: list[str] = []
+    if existing_content and not existing_content.endswith("\n"):
+        lines.append("\n")
+    lines.append(f"\n[{body.group_name}]\n")
+
+    for dev in body.devices:
+        host_line = f"{dev.ip}  platform={dev.platform}  port={dev.port}"
+        if dev.hostname:
+            host_line += f"  ; {dev.hostname}"
+        lines.append(host_line + "\n")
+
+    # ── Write file ────────────────────────────────────────────────────────────
+    try:
+        mode = "a" if (target_path.exists() and body.target == "existing") else "w"
+        with open(target_path, mode, encoding="utf-8") as fh:
+            fh.writelines(lines)
+    except OSError as e:
+        raise HTTPException(status_code=500, detail=f"Write failed: {e}")
+
+    # Set ownership: root:netorch, 640
+    try:
+        netorch_gid = grp.getgrnam("netorch").gr_gid
+        import os as _os
+        _os.chown(target_path, 0, netorch_gid)
+        target_path.chmod(0o640)
+    except Exception as e:
+        log.warning("inventory_chown_failed", file=str(target_path), error=str(e))
+
+    # ── Reload inventory ──────────────────────────────────────────────────────
+    try:
+        inventory_client.reload()
+    except Exception as e:
+        log.warning("inventory_reload_failed", error=str(e))
+
+    log.info("discovery_added_to_inventory",
+             file=display_file, group=body.group_name, count=len(body.devices))
+
+    return AddToInventoryResponse(
+        added=len(body.devices),
+        file=display_file,
+        group=body.group_name,
     )
