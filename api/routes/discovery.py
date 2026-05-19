@@ -48,11 +48,11 @@ _RELEVANCE = (
     "("
     "  values of fields whose (name of it = \"IP Address\") of it,"
     "  values of fields whose (name of it = \"MAC Address\") of it,"
-    "  values of fields whose (name of it = \"DNS Name\") of it,"
+    "  values of fields whose (name of it = \"Hostname\") of it,"
     "  values of fields whose (name of it = \"OS\") of it,"
     "  values of fields whose (name of it = \"Device Type\") of it,"
-    "  values of fields whose (name of it = \"Open Ports\") of it,"
-    "  values of fields whose (name of it = \"Scan Time\") of it"
+    "  values of fields whose (name of it = \"Scan Point\") of it,"
+    "  values of fields whose (name of it = \"Last Scan Time (Server Time)\") of it"
     ") of bes unmanagedassets"
 )
 
@@ -230,7 +230,7 @@ def get_discovery_devices() -> DiscoveryResponse:
         hostname    = _first(row[2]) if len(row) > 2 else ""
         os_str      = _first(row[3]) if len(row) > 3 else ""
         device_type = _first(row[4]) if len(row) > 4 else ""
-        open_ports  = _first(row[5]) if len(row) > 5 else ""
+        scan_point  = _first(row[5]) if len(row) > 5 else ""   # Scan Point (column 5)
         scan_time   = _first(row[6]) if len(row) > 6 else ""
 
         if not ip:
@@ -242,7 +242,7 @@ def get_discovery_devices() -> DiscoveryResponse:
             hostname=hostname,
             os=os_str,
             device_type=device_type,
-            open_ports=open_ports,
+            open_ports=scan_point,   # shows which Scan Point detected this device
             scan_time=scan_time,
             inferred_platform=_infer_platform(os_str, device_type),
             in_inventory=(ip in inventory_ips),
