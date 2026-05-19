@@ -282,7 +282,8 @@ class AddToInventoryResponse(BaseModel):
 
 
 class TriggerScanRequest(BaseModel):
-    subnet: str
+    scan_type: str = "local"   # "local" (Action1) | "range" (Action2 — requires subnet)
+    subnet:    str = ""        # required when scan_type="range"
 
 
 class TriggerScanResponse(BaseModel):

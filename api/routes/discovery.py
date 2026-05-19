@@ -467,30 +467,94 @@ def _validate_subnet(subnet: str) -> bool:
     return False
 
 
+def _fetch_fixlet_action_script(
+    action_index: int,
+    password: str,
+) -> str | None:
+    """
+    Fetch the action script for the configured scan fixlet at runtime
+    so we always use the current version from BigFix.
+    action_index: 0 = Action1 (local), 1 = Action2 (custom range)
+    """
+    # Fetch all action scripts at once and pick by index (item N syntax is not
+    # supported for this collection type in BigFix relevance)
+    relevance = (
+        f"scripts of actions of "
+        f"fixlets whose (id of it = {bigfix_cfg.scan_fixlet_id}) of bes sites"
+    )
+    api_url = f"{bigfix_cfg.server_url.rstrip('/')}/api/query"
+    try:
+        with httpx.Client(verify=bigfix_cfg.verify_ssl, timeout=30) as client:
+            resp = client.get(
+                api_url,
+                params={"relevance": relevance, "output": "json"},
+                auth=(bigfix_cfg.username, password),
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                scripts = data.get("result", [])
+                if isinstance(scripts, list) and action_index < len(scripts):
+                    return scripts[action_index]
+    except Exception as e:
+        log.warning("bigfix_fetch_script_failed", error=str(e))
+    return None
+
+
+def _post_bigfix_action(action_xml: str, password: str) -> tuple[int | None, str | None]:
+    """POST action XML to BigFix and return (action_id, error_message)."""
+    api_url = f"{bigfix_cfg.server_url.rstrip('/')}/api/actions"
+    try:
+        with httpx.Client(verify=bigfix_cfg.verify_ssl, timeout=60) as client:
+            resp = client.post(
+                api_url,
+                content=action_xml.encode("utf-8"),
+                headers={"Content-Type": "application/xml"},
+                auth=(bigfix_cfg.username, password),
+            )
+            if not resp.is_success:
+                body = resp.text[:500]
+                log.warning("bigfix_action_rejected", status=resp.status_code, body=body)
+                return None, f"BigFix rejected the action (HTTP {resp.status_code}): {body}"
+            # Parse Action ID from response XML
+            root = ET.fromstring(resp.text)
+            id_el = root.find(".//Action/ID") or root.find(".//ID")
+            action_id = int(id_el.text.strip()) if id_el is not None and id_el.text else None
+            return action_id, None
+    except httpx.HTTPError as e:
+        return None, f"BigFix API unreachable: {e}"
+    except Exception as e:
+        return None, f"Request failed: {e}"
+
+
 @router.post("/trigger-scan", response_model=TriggerScanResponse,
-             summary="Create a BigFix Action to run an nmap scan on the Scan Point")
+             summary="Trigger an nmap scan via the BigFix scan fixlet")
 def trigger_scan(body: TriggerScanRequest) -> TriggerScanResponse:
-    subnet = body.subnet.strip()
+    scan_type = body.scan_type.strip().lower()   # "local" or "range"
+    subnet    = body.subnet.strip()
 
-    # ── Validate subnet ───────────────────────────────────────────────────────
-    if not _validate_subnet(subnet):
-        raise HTTPException(
-            status_code=422,
-            detail=f"Invalid subnet or range: '{subnet}'. "
-                   "Use CIDR notation (10.0.1.0/24) or range (10.0.1.1-254).",
-        )
+    # ── Validate ──────────────────────────────────────────────────────────────
+    if scan_type not in ("local", "range"):
+        raise HTTPException(status_code=422, detail="scan_type must be 'local' or 'range'.")
 
-    # ── Check scan_point_id configured ───────────────────────────────────────
+    if scan_type == "range":
+        if not subnet:
+            raise HTTPException(status_code=422, detail="subnet is required when scan_type='range'.")
+        if not _validate_subnet(subnet):
+            raise HTTPException(
+                status_code=422,
+                detail=f"Invalid subnet: '{subnet}'. Use CIDR (10.0.1.0/24) or range (10.0.1.1-254).",
+            )
+
     if not bigfix_cfg.scan_point_id or bigfix_cfg.scan_point_id == "0":
         return TriggerScanResponse(
             error="scan_point_id not configured in [bigfix] section of netorch.toml"
         )
-
-    # ── Resolve password ──────────────────────────────────────────────────────
-    if not bigfix_cfg.server_url:
+    if not bigfix_cfg.scan_fixlet_id:
         return TriggerScanResponse(
-            error="BigFix not configured. Set [bigfix] server_url in netorch.toml."
+            error="scan_fixlet_id not configured in [bigfix] section of netorch.toml"
         )
+    if not bigfix_cfg.server_url:
+        return TriggerScanResponse(error="BigFix server_url not configured.")
 
     password = _get_bigfix_password()
     if not password:
@@ -502,21 +566,38 @@ def trigger_scan(body: TriggerScanRequest) -> TriggerScanResponse:
             )
         )
 
-    # ── Build nmap output path ────────────────────────────────────────────────
-    ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-    if bigfix_cfg.scan_point_os.lower() == "windows":
-        output_path = f"C:\\Temp\\netorch_nmap_{ts}.xml"
-    else:
-        output_path = f"/tmp/netorch_nmap_{ts}.xml"
+    # ── Fetch action script from the fixlet at runtime ────────────────────────
+    action_index = 0 if scan_type == "local" else 1
+    script = _fetch_fixlet_action_script(action_index, password)
+    if not script:
+        return TriggerScanResponse(
+            error=(
+                f"Could not fetch action script from fixlet {bigfix_cfg.scan_fixlet_id} "
+                f"in site '{bigfix_cfg.scan_fixlet_site}'. "
+                "Verify scan_fixlet_id and scan_fixlet_site in netorch.toml."
+            )
+        )
 
-    # ── Build Action XML ──────────────────────────────────────────────────────
+    # ── Build title and optional parameter element ────────────────────────────
+    if scan_type == "local":
+        title = f"netorch: Nmap Local Subnet Scan (Fixlet {bigfix_cfg.scan_fixlet_id})"
+        param_xml = ""
+    else:
+        title = f"netorch: Nmap Scan {subnet} (Fixlet {bigfix_cfg.scan_fixlet_id})"
+        param_xml = f'    <Parameter Name="IPRange">{subnet}</Parameter>\n'
+
+    # Escape the script for XML (the script may contain < > & " chars)
+    import html as _html
+    script_escaped = _html.escape(script)
+
+    # ── Correct element order per BESAPI.xsd: ActionScript → Parameter* → Settings → Target
     action_xml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <BES>
   <SingleAction>
-    <Title>netorch: Run Nmap Scan - {subnet}</Title>
+    <Title>{_html.escape(title)}</Title>
     <Relevance>true</Relevance>
-    <ActionScript MIMEType="application/x-Fixlet-Windows-Shell">waithidden nmap -sV -O --host-timeout 60s {subnet} -oX &quot;{output_path}&quot;</ActionScript>
-    <Settings>
+    <ActionScript MIMEType="application/x-Fixlet-Windows-Shell">{script_escaped}</ActionScript>
+{param_xml}    <Settings>
       <PreActionShowUI>false</PreActionShowUI>
       <HasTimeRange>false</HasTimeRange>
       <HasStartTime>false</HasStartTime>
@@ -528,43 +609,22 @@ def trigger_scan(body: TriggerScanRequest) -> TriggerScanResponse:
   </SingleAction>
 </BES>"""
 
-    # ── POST to BigFix /api/actions ───────────────────────────────────────────
-    api_url = f"{bigfix_cfg.server_url.rstrip('/')}/api/actions"
-    try:
-        with httpx.Client(verify=bigfix_cfg.verify_ssl, timeout=30) as client:
-            resp = client.post(
-                api_url,
-                content=action_xml.encode("utf-8"),
-                headers={"Content-Type": "application/xml"},
-                auth=(bigfix_cfg.username, password),
-            )
-            resp.raise_for_status()
-            resp_text = resp.text
-    except httpx.HTTPError as e:
-        log.warning("bigfix_trigger_scan_error", error=str(e))
-        return TriggerScanResponse(error=f"BigFix API unreachable: {e}")
-    except Exception as e:
-        return TriggerScanResponse(error=f"Request failed: {e}")
+    # ── Submit to BigFix ──────────────────────────────────────────────────────
+    action_id, err = _post_bigfix_action(action_xml, password)
+    if err:
+        log.warning("bigfix_scan_trigger_failed", error=err)
+        return TriggerScanResponse(error=err)
 
-    # ── Parse Action ID from response XML ─────────────────────────────────────
-    action_id: int | None = None
-    try:
-        root = ET.fromstring(resp_text)
-        # BigFix returns: <BESAPI><Action ...><ID>12345</ID>...
-        id_el = root.find(".//Action/ID") or root.find(".//ID")
-        if id_el is not None and id_el.text:
-            action_id = int(id_el.text.strip())
-    except Exception as e:
-        log.warning("bigfix_action_parse_error", error=str(e), body=resp_text[:500])
-
+    scan_desc = "local subnet" if scan_type == "local" else subnet
     log.info("bigfix_scan_triggered",
-             subnet=subnet, scan_point_id=bigfix_cfg.scan_point_id,
-             action_id=action_id)
+             scan_type=scan_type, subnet=scan_desc,
+             scan_point_id=bigfix_cfg.scan_point_id, action_id=action_id)
 
     return TriggerScanResponse(
         action_id=action_id,
         message=(
-            f"Scan triggered on BigFix Scan Point (Computer ID {bigfix_cfg.scan_point_id}). "
+            f"Scan of {scan_desc} triggered on Scan Point '{bigfix_cfg.scan_point_id}' "
+            f"(BigFix Action ID: {action_id}). "
             "Results will appear in the Discovery table within 15–30 minutes."
         ),
     )
