@@ -516,16 +516,15 @@ def trigger_scan(body: TriggerScanRequest) -> TriggerScanResponse:
     <Title>netorch: Run Nmap Scan - {subnet}</Title>
     <Relevance>true</Relevance>
     <ActionScript MIMEType="application/x-Fixlet-Windows-Shell">waithidden nmap -sV -O --host-timeout 60s {subnet} -oX &quot;{output_path}&quot;</ActionScript>
-    <Target>
-      <ComputerID>{bigfix_cfg.scan_point_id}</ComputerID>
-    </Target>
     <Settings>
+      <PreActionShowUI>false</PreActionShowUI>
       <HasTimeRange>false</HasTimeRange>
       <HasStartTime>false</HasStartTime>
       <HasEndTime>false</HasEndTime>
-      <PreActionShowUI>false</PreActionShowUI>
-      <HasMessageTemplate>false</HasMessageTemplate>
     </Settings>
+    <Target>
+      <ComputerName>{bigfix_cfg.scan_point_id}</ComputerName>
+    </Target>
   </SingleAction>
 </BES>"""
 
