@@ -119,6 +119,29 @@ def get_job_detail(job_id: str):
             "error":    dr.error,
         })
 
+    # For workflow jobs, build a step-by-step view from workflow_step_outputs
+    steps_out = []
+    if detail.mode.value == "workflow":
+        raw_steps = store.get_step_outputs(job_id)
+        # Group by step_name, preserving insertion order
+        step_map: dict[str, dict] = {}
+        for row in raw_steps:
+            name = row["step_name"]
+            if name not in step_map:
+                step_map[name] = {"step_name": name, "devices": [], "once_output": None, "once_exit_code": None}
+            if row["host"] is None:
+                # shell/once — single relay-side output
+                step_map[name]["once_output"]    = row["output"] or ""
+                step_map[name]["once_exit_code"] = row["exit_code"]
+            else:
+                step_map[name]["devices"].append({
+                    "host":      row["host"],
+                    "output":    (row["output"] or "").splitlines(),
+                    "exit_code": row["exit_code"],
+                    "status":    "success" if row["exit_code"] == 0 else "failed",
+                })
+        steps_out = list(step_map.values())
+
     return {
         "id":       detail.job_id,
         "mode":     detail.mode.value,
@@ -128,6 +151,7 @@ def get_job_detail(job_id: str):
         "started":  detail.started_at,
         "duration": detail.completed_at,
         "devices":  devices_out,
+        "steps":    steps_out,
     }
 
 
