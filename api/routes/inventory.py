@@ -177,6 +177,71 @@ def get_group_hosts(group: str):
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(e))
 
 
+class DeleteHostsRequest(BaseModel):
+    hosts: list[str]   # list of IP/hostname strings to remove
+
+
+@router.delete("/hosts", summary="Remove specified hosts from all inventory files")
+def delete_hosts(body: DeleteHostsRequest):
+    """
+    Remove each IP/hostname in `hosts` from every inventory .ini file.
+    Rewrites only the files that contained at least one of the hosts.
+    Reloads the inventory after writing.
+    """
+    import configparser as _cp
+
+    inv_dir = _inventory_dir()
+    to_remove = set(body.hosts)
+    if not to_remove:
+        raise HTTPException(status_code=400, detail="No hosts provided.")
+
+    removed: dict[str, list[str]] = {}  # filename → list of removed hosts
+    errors:  list[str] = []
+
+    for filepath in sorted(inv_dir.glob("*.ini")):
+        try:
+            original = filepath.read_text(encoding="utf-8")
+        except OSError:
+            continue
+
+        new_lines: list[str] = []
+        changed_in_file: list[str] = []
+
+        for line in original.splitlines(keepends=True):
+            stripped = line.strip()
+            # A host line starts with the IP/hostname (not a comment, not a section)
+            if stripped and not stripped.startswith(("#", ";", "[")):
+                host_token = stripped.split()[0]
+                if host_token in to_remove:
+                    changed_in_file.append(host_token)
+                    continue   # drop this line
+            new_lines.append(line)
+
+        if changed_in_file:
+            try:
+                filepath.write_text("".join(new_lines), encoding="utf-8")
+                removed[filepath.name] = changed_in_file
+            except OSError as e:
+                errors.append(f"{filepath.name}: {e}")
+
+    if not removed and not errors:
+        return {"removed": 0, "files_changed": [], "errors": [],
+                "message": "None of the specified hosts were found in any inventory file."}
+
+    # Reload inventory so in-memory state reflects the changes
+    try:
+        inventory_client.reload()
+    except Exception as e:
+        errors.append(f"Reload warning: {e}")
+
+    total_removed = sum(len(v) for v in removed.values())
+    return {
+        "removed":       total_removed,
+        "files_changed": [{"file": f, "hosts": hs} for f, hs in removed.items()],
+        "errors":        errors,
+    }
+
+
 @router.post("/reload", summary="Reload all inventory files from disk without restarting")
 def reload_inventory():
     inventory_client.reload()
