@@ -248,6 +248,8 @@ class DiscoveredDevice(BaseModel):
     scan_time:         str = ""
     inferred_platform: str = "unknown"
     in_inventory:      bool = False
+    inventory_file:    str = ""
+    inventory_group:   str = ""
 
 
 class DiscoveryResponse(BaseModel):

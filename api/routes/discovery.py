@@ -57,6 +57,33 @@ _RELEVANCE = (
 )
 
 
+# ── Inventory location lookup ────────────────────────────────────────────────
+
+def _build_host_location_map() -> dict[str, dict]:
+    """
+    Return {ip: {"file": "filename.ini", "group": "groupname"}} for every
+    host found across all inventory files. First file/group wins on duplicates.
+    """
+    result: dict[str, dict] = {}
+    inv_path = inventory_cfg.path
+    files = sorted(inv_path.glob("*.ini")) if inv_path.is_dir() else [inv_path]
+    for filepath in files:
+        try:
+            parser = configparser.RawConfigParser(allow_no_value=True, strict=False)
+            parser.optionxform = str
+            parser.read_string(filepath.read_text(encoding="utf-8", errors="replace"))
+        except Exception:
+            continue
+        for section in parser.sections():
+            if ":" in section:          # skip [all:vars] etc.
+                continue
+            for key in parser.options(section):
+                ip = key.strip().split()[0]   # first token is the IP
+                if ip and not ip.startswith(("#", ";")):
+                    result.setdefault(ip, {"file": filepath.name, "group": section})
+    return result
+
+
 # ── Platform inference ────────────────────────────────────────────────────────
 
 def _infer_platform(os_str: str, device_type: str) -> str:
@@ -198,10 +225,12 @@ def get_discovery_devices() -> DiscoveryResponse:
             error=f"BigFix request failed: {e}",
         )
 
-    # Build inventory IP set for in_inventory check
+    # Build inventory IP → (file, group) map for in_inventory + location columns
     try:
-        inventory_ips: set[str] = set(inventory_client.list_hosts())
+        host_location = _build_host_location_map()
+        inventory_ips: set[str] = set(host_location.keys())
     except Exception:
+        host_location = {}
         inventory_ips = set()
 
     # Parse result tuples — BigFix returns:
@@ -236,6 +265,7 @@ def get_discovery_devices() -> DiscoveryResponse:
         if not ip:
             continue
 
+        loc = host_location.get(ip, {})
         devices.append(DiscoveredDevice(
             ip=ip,
             mac=mac,
@@ -246,6 +276,8 @@ def get_discovery_devices() -> DiscoveryResponse:
             scan_time=scan_time,
             inferred_platform=_infer_platform(os_str, device_type),
             in_inventory=(ip in inventory_ips),
+            inventory_file=loc.get("file", ""),
+            inventory_group=loc.get("group", ""),
         ))
 
     log.info("bigfix_discovery_complete",
