@@ -71,9 +71,11 @@ class JobStore:
 
     def mark_complete(self, job_id: str) -> None:
         counts = db.get_job_summary_counts(job_id)
-        if counts["failed"] == 0:
+        if counts["failed"] == 0 and counts["success"] > 0:
             status = JobStatus.completed.value
         elif counts["success"] == 0:
+            # No successes — includes the case where no device results were
+            # written at all (e.g. all devices skipped due to earlier failures)
             status = JobStatus.failed.value
         else:
             status = JobStatus.partial_failure.value

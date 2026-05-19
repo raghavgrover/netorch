@@ -329,19 +329,33 @@ def _execute_shell_per_device(
     job_id: str,
     options,
 ) -> tuple[str, int]:
-    """Run the shell script once per device on the relay, with device env vars."""
+    """
+    Run the shell script once per device on the relay, with device env vars.
+
+    Credential lookup is attempted but NOT required — shell/per_device runs
+    locally on the relay, not via SSH. If vault lookup fails we still inject
+    basic device info (host, platform, group) so the script can reference them.
+    """
+    creds = None
     try:
         creds = resolve_credentials(
             host=device.host,
             group=device.group,
             platform_hint=device.platform,
         )
-    except Exception as e:
-        return str(e), 1
+    except Exception:
+        pass   # credentials optional for relay-side scripts
 
     merged = _build_step_vars(step, context, creds)
     env = _make_env(merged["vars"], job_id=job_id)
-    _inject_device_env(env, creds)
+    if creds:
+        _inject_device_env(env, creds)
+    else:
+        # Inject what we know without vault credentials
+        env["TARGET_HOST"]     = device.host or ""
+        env["DEVICE_PLATFORM"] = device.platform or ""
+        env["DEVICE_GROUP"]    = device.group or ""
+        env["DEVICE_SSH_PORT"] = "22"
     _inject_step_outputs(env, context)
     script = substitute_vars(step.script or "", merged)
     return _run_bash(script, env)
