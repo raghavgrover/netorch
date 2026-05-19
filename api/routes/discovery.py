@@ -258,15 +258,38 @@ def get_discovery_devices() -> DiscoveryResponse:
     )
 
 
+@router.get("/inventory-groups", summary="Return the group names in a specific inventory file")
+def get_inventory_groups(file: str = "") -> dict:
+    """Return the [section] names from a given .ini inventory file."""
+    if not file or "/" in file or ".." in file:
+        return {"groups": []}
+    inv_dir = inventory_cfg.path if inventory_cfg.path.is_dir() else inventory_cfg.path.parent
+    target = inv_dir / file
+    if not target.exists():
+        return {"groups": []}
+    parser = configparser.RawConfigParser(allow_no_value=True, strict=False)
+    parser.optionxform = str
+    try:
+        parser.read_string(target.read_text(encoding="utf-8", errors="replace"))
+    except Exception:
+        return {"groups": []}
+    # Exclude meta-sections like "all:vars"
+    groups = [s for s in parser.sections() if ":" not in s]
+    return {"groups": groups}
+
+
 @router.post("/add-to-inventory", response_model=AddToInventoryResponse,
              summary="Add discovered devices to a netorch inventory file")
 def add_to_inventory(body: AddToInventoryRequest) -> AddToInventoryResponse:
-    # ── Validate group name ───────────────────────────────────────────────────
-    if not body.group_name or not _GROUP_RE.match(body.group_name):
+    # ── Validate group name (optional — defaults to "ungrouped") ─────────────
+    group_name = body.group_name.strip() if body.group_name else "ungrouped"
+    if not _GROUP_RE.match(group_name):
         raise HTTPException(
             status_code=400,
             detail="group_name must contain only letters, digits, underscores, or hyphens.",
         )
+    # Patch body so the rest of the function uses the resolved name
+    body = body.model_copy(update={"group_name": group_name})
 
     if not body.devices:
         raise HTTPException(status_code=400, detail="No devices provided.")
@@ -303,43 +326,61 @@ def add_to_inventory(body: AddToInventoryRequest) -> AddToInventoryResponse:
         raise HTTPException(status_code=400, detail="target must be 'existing' or 'new'.")
 
     # ── Read existing file (or start fresh) ───────────────────────────────────
-    parser = configparser.RawConfigParser(allow_no_value=True)
-    parser.optionxform = str   # preserve case
-
     existing_content = ""
     if target_path.exists():
         try:
             existing_content = target_path.read_text(encoding="utf-8")
-            parser.read_string(existing_content)
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Cannot read inventory file: {e}")
 
-    # Check group doesn't already exist
-    if parser.has_section(body.group_name):
-        raise HTTPException(
-            status_code=409,
-            detail=f"Group '[{body.group_name}]' already exists in {display_file}.",
+    # ── Build host entry lines ────────────────────────────────────────────────
+    def _host_line(dev) -> str:
+        line = f"{dev.ip}  platform={dev.platform}  port={dev.port}"
+        hostname = (dev.hostname or "").strip()
+        if hostname and hostname.lower() not in ("n/a", "na", "-", "none", "unknown"):
+            line += f"  ; {hostname}"
+        return line + "\n"
+
+    host_lines = [_host_line(d) for d in body.devices]
+
+    # ── Determine write strategy ──────────────────────────────────────────────
+    section_header = f"[{body.group_name}]"
+
+    # Check if the section already exists (case-insensitive search)
+    section_exists = any(
+        line.strip().lower() == section_header.lower()
+        for line in existing_content.splitlines()
+    )
+
+    if section_exists:
+        # Insert new hosts immediately after the [group_name] header line
+        # so they always appear at the top of the group, before any existing
+        # entries or comments.
+        lines_in_file = existing_content.splitlines(keepends=True)
+        insert_at = len(lines_in_file)   # fallback: end of file
+        for i, line in enumerate(lines_in_file):
+            if line.strip().lower() == section_header.lower():
+                insert_at = i + 1   # right after the header
+                break
+        new_lines = (
+            lines_in_file[:insert_at]
+            + host_lines
+            + lines_in_file[insert_at:]
         )
-
-    # ── Build new section lines ───────────────────────────────────────────────
-    lines: list[str] = []
-    if existing_content and not existing_content.endswith("\n"):
-        lines.append("\n")
-    lines.append(f"\n[{body.group_name}]\n")
-
-    for dev in body.devices:
-        host_line = f"{dev.ip}  platform={dev.platform}  port={dev.port}"
-        if dev.hostname:
-            host_line += f"  ; {dev.hostname}"
-        lines.append(host_line + "\n")
-
-    # ── Write file ────────────────────────────────────────────────────────────
-    try:
-        mode = "a" if (target_path.exists() and body.target == "existing") else "w"
-        with open(target_path, mode, encoding="utf-8") as fh:
-            fh.writelines(lines)
-    except OSError as e:
-        raise HTTPException(status_code=500, detail=f"Write failed: {e}")
+        try:
+            target_path.write_text("".join(new_lines), encoding="utf-8")
+        except OSError as e:
+            raise HTTPException(status_code=500, detail=f"Write failed: {e}")
+    else:
+        # New section — append at end of file
+        prefix = "\n" if existing_content and not existing_content.endswith("\n") else ""
+        new_section = f"{prefix}\n{section_header}\n" + "".join(host_lines)
+        try:
+            mode = "a" if existing_content else "w"
+            with open(target_path, mode, encoding="utf-8") as fh:
+                fh.write(new_section)
+        except OSError as e:
+            raise HTTPException(status_code=500, detail=f"Write failed: {e}")
 
     # Set ownership: root:netorch, 640
     try:
