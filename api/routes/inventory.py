@@ -101,12 +101,12 @@ def _platform_counts() -> dict[str, int]:
         for section in cfg.sections():
             if section in ("all:vars",) or section.endswith(":vars"):
                 continue
-            for _host, line_value in cfg.items(section):
-                plat = "unknown"
-                if line_value:
-                    m = re.search(r"platform\s*=\s*(\S+)", line_value)
-                    if m:
-                        plat = m.group(1)
+            for key, line_value in cfg.items(section):
+                # configparser splits at the first '=' so reconstruct the
+                # full token string before searching for platform=<value>
+                full_line = f"{key}={line_value}" if line_value is not None else key
+                m = re.search(r"\bplatform\s*=\s*(\S+)", full_line, re.IGNORECASE)
+                plat = m.group(1).lower() if m else "unknown"
                 counts[plat] = counts.get(plat, 0) + 1
     return counts
 
