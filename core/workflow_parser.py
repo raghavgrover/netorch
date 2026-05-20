@@ -19,7 +19,8 @@ VALID_STEP_TYPES = {
     "device_config",
     "device_runbook",
     "file_transfer",
-    "shell",
+    "shell",                     # legacy alias
+    "run_shell_script_locally",  # current name
 }
 VALID_RUN_VALUES = {"once", "per_device"}
 
@@ -152,7 +153,7 @@ def _validate(wf: WorkflowDefinition) -> None:
                 f"Step '{step.name}': unknown type '{step.type}'. "
                 f"Valid types: {sorted(VALID_STEP_TYPES)}"
             )
-        if step.type == "shell":
+        if step.type in ("shell", "run_shell_script_locally"):
             if step.run not in VALID_RUN_VALUES:
                 raise WorkflowParseError(
                     f"Step '{step.name}': shell step must have "

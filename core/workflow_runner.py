@@ -153,7 +153,7 @@ def _execute_step(
 
     step_ctx: dict = {"devices": {}}
 
-    if step.type == "shell" and step.run == "once":
+    if step.type in ("shell", "run_shell_script_locally") and step.run == "once":
         output, exit_code = _execute_shell_once(step, context, job_id)
         step_ctx["output"] = output
         step_ctx["exit_code"] = exit_code
@@ -165,7 +165,7 @@ def _execute_step(
                 f"{exit_code}:\n{output[-500:]}"
             )
 
-    elif step.type == "shell" and step.run == "per_device":
+    elif step.type in ("shell", "run_shell_script_locally") and step.run == "per_device":
         active = [d for d in devices
                   if (d.host or f"[group:{d.group}]") not in context["failed_devices"]]
         results = _fan_out(
