@@ -168,12 +168,16 @@ class Database:
             self._putconn(conn)
 
     def query(self, sql: str, params: tuple = ()) -> list[_Row]:
-        """Run a SELECT and return all rows as _Row dicts."""
+        """Run a SELECT and return all rows as _Row dicts.
+        Uses 'with conn:' to ensure the implicit transaction is properly
+        committed/rolled back before the connection is returned to the pool.
+        """
         conn = self._conn()
         try:
-            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-                cur.execute(sql, params)
-                return [_Row(r) for r in cur.fetchall()]
+            with conn:
+                with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                    cur.execute(sql, params)
+                    return [_Row(r) for r in cur.fetchall()]
         finally:
             self._putconn(conn)
 
@@ -181,10 +185,11 @@ class Database:
         """Run a SELECT and return the first row or None."""
         conn = self._conn()
         try:
-            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-                cur.execute(sql, params)
-                row = cur.fetchone()
-                return _Row(row) if row else None
+            with conn:
+                with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                    cur.execute(sql, params)
+                    row = cur.fetchone()
+                    return _Row(row) if row else None
         finally:
             self._putconn(conn)
 
