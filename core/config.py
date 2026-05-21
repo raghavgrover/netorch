@@ -95,20 +95,22 @@ class BigFixConfig:
 
 
 class DatabaseConfig:
-    """
-    Reads the optional [database] section from netorch.toml.
-
-    If the section is absent (existing installs), defaults to
-    /opt/netorch/netorch.db — sibling of the config file itself.
-
-    netorch.toml example:
-        [database]
-        db_path = "/opt/netorch/netorch.db"
-    """
+    """Reads the [database] section from netorch.toml (PostgreSQL)."""
     def __init__(self, raw: dict, config_path: Path):
-        db_section = raw.get("database", {})
-        default_db = config_path.parent / "netorch.db"
-        self.db_path: Path = Path(db_section.get("db_path", str(default_db)))
+        db = raw.get("database", {})
+        self.host:     str = db.get("host",     "localhost")
+        self.port:     int = int(db.get("port", 5432))
+        self.dbname:   str = db.get("dbname",   "netorch")
+        self.user:     str = db.get("user",      "netorch")
+        self.password: str = db.get("password",  "")
+
+    @property
+    def dsn(self) -> str:
+        return (
+            f"host={self.host} port={self.port} "
+            f"dbname={self.dbname} user={self.user} "
+            f"password={self.password}"
+        )
 
 
 def _build_all():
@@ -119,7 +121,7 @@ def _build_all():
     _inventory   = InventoryConfig(raw)
     _logging     = LoggingConfig(raw)
     _ratelimit   = RateLimitConfig(raw)
-    _database    = DatabaseConfig(raw, config_path)
+    _database    = DatabaseConfig(raw, config_path)   # config_path kept for compat
     _bigfix      = BigFixConfig(raw)
     _logging.log_dir.mkdir(parents=True, exist_ok=True)
     return _server, _executor, _inventory, _logging, _ratelimit, _database, _bigfix
