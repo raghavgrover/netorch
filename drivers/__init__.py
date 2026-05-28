@@ -3,21 +3,27 @@ drivers/__init__.py — Factory: instantiate the correct driver based on
 platform string from inventory.ini or the job payload.
 """
 from drivers.base import BaseDriver, DeviceCredentials
-from drivers.ios_xe import IosXeDriver
-from drivers.ios_xr import IosXrDriver
-from drivers.linux  import LinuxDriver
-from drivers.mock   import MockDriver
+from drivers.ios_xe  import IosXeDriver
+from drivers.ios_xr  import IosXrDriver
+from drivers.nxos    import NxosDriver
+from drivers.junos   import JunosDriver
+from drivers.fortinet import FortinetDriver
+from drivers.linux   import LinuxDriver
+from drivers.mock    import MockDriver
 
 _DRIVER_MAP: dict[str, type[BaseDriver]] = {
-    "cisco_ios":   IosXeDriver,
-    "cisco_xe":    IosXeDriver,
-    "cisco_xr":    IosXrDriver,
-    "linux":       LinuxDriver,
-    "mock":          MockDriver,
-    "mock_timeout":  MockDriver,
-    "mock_authfail": MockDriver,
-    "mock_cmdfail":  MockDriver,
-    "mock_xferfail": MockDriver,
+    "cisco_ios":      IosXeDriver,
+    "cisco_xe":       IosXeDriver,
+    "cisco_xr":       IosXrDriver,
+    "cisco_nxos":     NxosDriver,
+    "juniper_junos":  JunosDriver,
+    "fortinet":       FortinetDriver,
+    "linux":          LinuxDriver,
+    "mock":           MockDriver,
+    "mock_timeout":   MockDriver,
+    "mock_authfail":  MockDriver,
+    "mock_cmdfail":   MockDriver,
+    "mock_xferfail":  MockDriver,
 }
 
 
