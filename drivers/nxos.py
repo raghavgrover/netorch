@@ -16,6 +16,17 @@ from netmiko import file_transfer as netmiko_file_transfer
 
 from drivers.base import BaseDriver, DeviceCredentials
 
+# NX-OS CLI error prefixes (exec and config mode).
+# NX-OS uses "% Invalid command at '^' marker." instead of IOS's
+# "% Invalid input detected at '^' marker." — keep phrase lists separate.
+_CLI_ERROR_PHRASES = (
+    "% invalid command",    # unrecognised command
+    "% incomplete command", # missing required arguments
+    "% ambiguous command",  # partial command matches more than one
+    "% invalid input",      # alternate NX-OS error form
+    "% permission denied",  # role-based access denied
+)
+
 
 class NxosDriver(BaseDriver):
 
@@ -53,12 +64,22 @@ class NxosDriver(BaseDriver):
     def run_command(self, command: str) -> str:
         if not self._conn:
             raise RuntimeError("Not connected. Call connect() first.")
-        return self._conn.send_command(command, read_timeout=self.timeout)
+        out = self._conn.send_command(command, read_timeout=self.timeout)
+        if any(p in out.lower() for p in _CLI_ERROR_PHRASES):
+            raise RuntimeError(
+                f"NX-OS command error on {self.creds.host} — '{command}':\n{out}"
+            )
+        return out
 
     def run_config_commands(self, commands: list[str]) -> str:
         if not self._conn:
             raise RuntimeError("Not connected. Call connect() first.")
-        return self._conn.send_config_set(commands, read_timeout=self.timeout)
+        out = self._conn.send_config_set(commands, read_timeout=self.timeout)
+        if any(p in out.lower() for p in _CLI_ERROR_PHRASES):
+            raise RuntimeError(
+                f"NX-OS config error on {self.creds.host}:\n{out}"
+            )
+        return out
 
     def transfer_file(self, local_path: str, remote_path: str) -> None:
         """

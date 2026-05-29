@@ -12,6 +12,21 @@ from netmiko import file_transfer as netmiko_file_transfer
 
 from drivers.base import BaseDriver, DeviceCredentials
 
+# IOS / IOS-XE CLI error prefixes (exec and config mode).
+# All IOS user-facing errors begin with "% " (percent + space).
+# Syslog entries use "%FACILITY-SEVERITY-MNEMONIC:" (no space after %)
+# so they are not matched here.
+_CLI_ERROR_PHRASES = (
+    "% invalid input detected",   # unrecognised command — most common
+    "% ambiguous command:",        # partial command matches more than one
+    "% incomplete command",        # missing required arguments
+    "% authorization failed",      # AAA authorisation denied
+    "% error:",                    # generic IOS error prefix
+    "% bad passwords",             # incorrect enable secret
+    "% no such file or directory", # file-system reference not found
+    "% unknown command",           # older IOS variants
+)
+
 
 class IosXeDriver(BaseDriver):
 
@@ -60,12 +75,22 @@ class IosXeDriver(BaseDriver):
     def run_command(self, command: str) -> str:
         if not self._conn:
             raise RuntimeError("Not connected. Call connect() first.")
-        return self._conn.send_command(command, read_timeout=self.timeout)
+        out = self._conn.send_command(command, read_timeout=self.timeout)
+        if any(p in out.lower() for p in _CLI_ERROR_PHRASES):
+            raise RuntimeError(
+                f"IOS command error on {self.creds.host} — '{command}':\n{out}"
+            )
+        return out
 
     def run_config_commands(self, commands: list[str]) -> str:
         if not self._conn:
             raise RuntimeError("Not connected. Call connect() first.")
-        return self._conn.send_config_set(commands, read_timeout=self.timeout)
+        out = self._conn.send_config_set(commands, read_timeout=self.timeout)
+        if any(p in out.lower() for p in _CLI_ERROR_PHRASES):
+            raise RuntimeError(
+                f"IOS config error on {self.creds.host}:\n{out}"
+            )
+        return out
 
     def transfer_file(self, local_path: str, remote_path: str) -> None:
         """

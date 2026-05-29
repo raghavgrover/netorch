@@ -70,7 +70,13 @@ class IosXrDriver(BaseDriver):
     def run_command(self, command: str) -> str:
         if not self._conn:
             raise RuntimeError("Not connected.")
-        return self._conn.send_command(command, read_timeout=self.timeout)
+        out = self._conn.send_command(command, read_timeout=self.timeout)
+        # IOS-XR exec errors use the same "% " prefix as IOS/IOS-XE
+        if "% " in out and any(p in out.lower() for p in _DRY_RUN_ERROR_PHRASES):
+            raise RuntimeError(
+                f"IOS-XR command error on {self.creds.host} — '{command}':\n{out}"
+            )
+        return out
 
     def run_config_commands(self, commands: list[str]) -> str:
         """
