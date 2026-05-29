@@ -45,6 +45,10 @@ log = get_logger("workflow_runner")
 _active_jobs: dict[str, threading.Event] = {}
 _active_lock  = threading.Lock()
 
+# Exit code sentinel: used internally to mark a step as skipped (when:/platform:
+# condition was false). Never propagated to failed_devices.
+_SKIP_CODE = -1
+
 RUNBOOKS_DIR = Path("/opt/netorch/runbooks")
 
 
@@ -152,10 +156,21 @@ def _execute_step(
     log.info("step_start", job_id=job_id, step=step.name, type=step.type)
 
     step_ctx: dict = {"devices": {}}
+    is_shell = step.type in ("shell", "run_shell_script_locally")
 
-    if step.type in ("shell", "run_shell_script_locally") and step.run == "once":
+    # ── when: check for shell steps (device steps check per-device in _execute_device_step)
+    if step.when and is_shell:
+        if not _evaluate_when(step.when, context):
+            msg = f"Step skipped — when: condition not met: {step.when!r}"
+            step_ctx.update({"output": msg, "exit_code": 0, "skipped": True})
+            _store_step_output(job_id, step.name, host=None, output=msg, exit_code=0)
+            context["steps"][step.name] = step_ctx
+            log.info("step_skipped_when", job_id=job_id, step=step.name)
+            return
+
+    if is_shell and step.run == "once":
         output, exit_code = _execute_shell_once(step, context, job_id)
-        step_ctx["output"] = output
+        step_ctx["output"]    = output
         step_ctx["exit_code"] = exit_code
         _store_step_output(job_id, step.name, host=None,
                            output=output, exit_code=exit_code)
@@ -165,7 +180,7 @@ def _execute_step(
                 f"{exit_code}:\n{output[-500:]}"
             )
 
-    elif step.type in ("shell", "run_shell_script_locally") and step.run == "per_device":
+    elif is_shell and step.run == "per_device":
         active = [d for d in devices
                   if (d.host or f"[group:{d.group}]") not in context["failed_devices"]]
         results = _fan_out(
@@ -173,14 +188,18 @@ def _execute_step(
             active, step, context, job_id, options,
         )
         for host, (out, code) in results.items():
-            step_ctx["devices"][host] = {"output": out, "exit_code": code}
-            _store_step_output(job_id, step.name, host=host,
-                               output=out, exit_code=code)
-            if code != 0:
+            skipped = (code == _SKIP_CODE)
+            actual  = 0 if skipped else code
+            step_ctx["devices"][host] = {"output": out, "exit_code": actual,
+                                         "skipped": skipped}
+            _store_step_output(job_id, step.name, host=host, output=out, exit_code=actual)
+            if not skipped and actual != 0:
                 context["failed_devices"].add(host)
+        _rollup_output(step_ctx)
 
     else:
-        # device-scoped step
+        # device-scoped steps (device_commands, device_config, file_transfer,
+        #                       device_runbook, wait_until)
         active = [d for d in devices
                   if (d.host or f"[group:{d.group}]") not in context["failed_devices"]]
         results = _fan_out(
@@ -188,12 +207,20 @@ def _execute_step(
             active, step, context, job_id, options,
         )
         for host, (out, code) in results.items():
-            step_ctx["devices"][host] = {"output": out, "exit_code": code}
-            _store_step_output(job_id, step.name, host=host,
-                               output=out, exit_code=code)
-            if code != 0:
+            skipped = (code == _SKIP_CODE)
+            actual  = 0 if skipped else code
+            step_ctx["devices"][host] = {"output": out, "exit_code": actual,
+                                         "skipped": skipped}
+            _store_step_output(job_id, step.name, host=host, output=out, exit_code=actual)
+            if not skipped and actual != 0:
                 context["failed_devices"].add(host)
-            _update_device_result(job_id, host, step, out, code)
+            if not skipped:
+                _update_device_result(job_id, host, step, out, actual)
+        _rollup_output(step_ctx)
+
+    # ── register: — apply after all output is collected and rolled up
+    if step.register:
+        _apply_register(step_ctx, step.register)
 
     context["steps"][step.name] = step_ctx
     log.info("step_done", job_id=job_id, step=step.name,
@@ -223,6 +250,139 @@ def _fan_out(fn, devices, step, context, job_id, options) -> dict:
     return results
 
 
+def _evaluate_when(condition: str, context: dict, host: Optional[str] = None) -> bool:
+    """
+    Evaluate a ``when:`` condition string.  Returns True if the step should run.
+
+    Supported forms:
+      steps.STEP.output contains "STRING"
+      steps.STEP.output matches "REGEX"
+      steps.STEP.exit_code == 0
+      vars.PARAM == "VALUE"
+      ... (== and != comparisons)
+    For device steps ``host`` is provided and per-device output is checked first.
+    """
+    if not condition:
+        return True
+    c = condition.strip()
+    for op in (" contains ", " matches ", " == ", " != "):
+        if op in c:
+            lhs_str, _, rhs_str = c.partition(op)
+            lhs_val = _resolve_lhs(lhs_str.strip(), context, host)
+            rhs_val  = rhs_str.strip().strip("\"'")
+            if op == " contains ":
+                return rhs_val in lhs_val
+            if op == " matches ":
+                try:
+                    return bool(re.search(rhs_val, lhs_val))
+                except re.error:
+                    return False
+            if op == " == ":
+                return lhs_val == rhs_val
+            if op == " != ":
+                return lhs_val != rhs_val
+    # No operator — treat as truthy existence check
+    return bool(_resolve_lhs(c, context, host))
+
+
+def _resolve_lhs(path: str, context: dict, host: Optional[str]) -> str:
+    """
+    Resolve a dotted path such as ``steps.check.output`` from context.
+    When ``host`` is provided and the path starts with ``steps.``, the
+    per-device output for that host is tried before the step-level rollup.
+    """
+    parts = path.split(".")
+    # Per-device awareness: steps.STEP.ATTR
+    if len(parts) >= 3 and parts[0] == "steps" and host:
+        step_data  = context.get("steps", {}).get(parts[1], {})
+        attr       = parts[2]
+        device_row = step_data.get("devices", {}).get(host, {})
+        if attr in device_row:
+            val: object = device_row[attr]
+            for p in parts[3:]:
+                val = val.get(p, "") if isinstance(val, dict) else ""
+            return str(val) if val is not None else ""
+        # Fall back to step-level rollup
+        val = step_data.get(attr, "")
+        for p in parts[3:]:
+            val = val.get(p, "") if isinstance(val, dict) else ""
+        return str(val) if val is not None else ""
+    # Generic path traversal
+    val = context
+    for part in parts:
+        val = val.get(part) if isinstance(val, dict) else None
+        if val is None:
+            return ""
+    return str(val) if val is not None else ""
+
+
+def _check_until(condition: str, output: str) -> bool:
+    """
+    Check a ``until:`` condition against a single command's output.
+    Supported: ``output contains "X"`` and ``output matches "REGEX"``.
+    """
+    c = condition.strip()
+    if " contains " in c:
+        _, _, rhs = c.partition(" contains ")
+        return rhs.strip().strip("\"'") in output
+    if " matches " in c:
+        _, _, rhs = c.partition(" matches ")
+        try:
+            return bool(re.search(rhs.strip().strip("\"'"), output))
+        except re.error:
+            return False
+    # Bare string — just check non-empty output
+    return bool(output.strip())
+
+
+def _rollup_output(step_ctx: dict) -> None:
+    """
+    Create a step-level ``output`` key from per-device results so that
+    subsequent steps can reference ``{{ steps.STEP.output }}`` regardless
+    of whether the previous step was shell/once or device-scoped.
+    Also sets ``step_ctx["exit_code"]`` (0 only when all devices succeeded).
+    """
+    devices = step_ctx.get("devices", {})
+    if not devices:
+        return
+    parts = []
+    for host, data in devices.items():
+        if data.get("skipped"):
+            continue
+        out = data.get("output", "")
+        if out:
+            parts.append(f"[{host}]\n{out}")
+    step_ctx["output"]    = "\n\n".join(parts)
+    step_ctx["exit_code"] = 0 if all(
+        d.get("exit_code", 1) == 0 for d in devices.values()
+        if not d.get("skipped")
+    ) else 1
+
+
+def _apply_register(step_ctx: dict, register: dict) -> None:
+    """
+    Apply ``register:`` regex patterns to the step's rolled-up output
+    and store named capture groups in ``step_ctx["captured"]``.
+    Captured values are reachable via ``{{ steps.STEP.captured.VAR }}``.
+    """
+    if not register:
+        return
+    output = step_ctx.get("output", "")
+    captured: dict[str, str] = {}
+    for var_name, pattern in register.items():
+        try:
+            m = re.search(pattern, output, re.MULTILINE)
+            if m:
+                captured[var_name] = (
+                    m.group(1) if m.lastindex and m.lastindex >= 1
+                    else m.group(0)
+                )
+        except re.error:
+            pass  # bad regex — skip silently
+    if captured:
+        step_ctx["captured"] = captured
+
+
 def _execute_device_step(
     device: DeviceEntry,
     step: StepDefinition,
@@ -240,7 +400,23 @@ def _execute_device_step(
     except Exception as e:
         return str(e), 1
 
-    merged = _build_step_vars(step, context, creds)
+    host = creds.host or device.host or ""
+
+    # ── platform: filter
+    if step.platform and creds.platform not in step.platform:
+        return (
+            f"Skipped — platform '{creds.platform}' not in {step.platform}",
+            _SKIP_CODE,
+        )
+
+    # ── when: per-device check
+    if step.when and not _evaluate_when(step.when, context, host=host):
+        return (
+            f"Skipped — when: {step.when!r} evaluated false for {host}",
+            _SKIP_CODE,
+        )
+
+    merged  = _build_step_vars(step, context, creds)
     timeout = options.timeout_per_device
     output_parts: list[str] = []
 
@@ -265,14 +441,50 @@ def _execute_device_step(
                 except Exception as e:
                     return str(e), 1
 
+            elif step.type == "wait_until":
+                cmd          = substitute_vars((step.commands or [""])[0], merged)
+                timeout_secs = min(
+                    step.timeout or options.timeout_per_device,
+                    options.timeout_per_device,
+                )
+                interval     = max(1, step.interval)
+                start        = time.monotonic()
+                attempt      = 0
+                matched      = False
+
+                while True:
+                    if time.monotonic() - start >= timeout_secs:
+                        break
+                    attempt += 1
+                    try:
+                        out = driver.run_command(cmd)
+                    except Exception as e:
+                        out = f"ERROR: {e}"
+                    output_parts.append(f"# [{attempt}] {cmd}\n{out}")
+                    if _check_until(step.until or "", out):
+                        matched = True
+                        break
+                    remaining = timeout_secs - (time.monotonic() - start)
+                    if remaining <= 0:
+                        break
+                    time.sleep(min(interval, remaining))
+
+                if not matched:
+                    elapsed = round(time.monotonic() - start, 1)
+                    if step.on_timeout == "continue":
+                        output_parts.append(
+                            f"# Timed out after {elapsed}s — continuing"
+                        )
+                    else:
+                        output_parts.append(f"# Timed out after {elapsed}s")
+                        return "\n".join(output_parts), 1
+
             elif step.type == "file_transfer":
                 local  = substitute_vars(step.local_path or "", merged)
                 remote = substitute_vars(step.remote_path or "", merged)
                 try:
                     driver.transfer_file(local, remote)
-                    output_parts.append(
-                        f"Transferred {local} → {remote}"
-                    )
+                    output_parts.append(f"Transferred {local} → {remote}")
                 except Exception as e:
                     return str(e), 1
                 if step.post_transfer_commands:
@@ -345,6 +557,15 @@ def _execute_shell_per_device(
         )
     except Exception:
         pass   # credentials optional for relay-side scripts
+
+    # ── when: per-device check (same semantics as device steps)
+    if step.when:
+        dev_host = (creds.host if creds else None) or device.host or ""
+        if not _evaluate_when(step.when, context, host=dev_host):
+            return (
+                f"Skipped — when: {step.when!r} evaluated false for {dev_host}",
+                _SKIP_CODE,
+            )
 
     merged = _build_step_vars(step, context, creds)
     env = _make_env(merged["vars"], job_id=job_id)

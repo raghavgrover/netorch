@@ -21,6 +21,7 @@ VALID_STEP_TYPES = {
     "file_transfer",
     "shell",                     # legacy alias
     "run_shell_script_locally",  # current name
+    "wait_until",                # retry a command until condition met
 }
 VALID_RUN_VALUES = {"once", "per_device"}
 
@@ -40,6 +41,16 @@ class StepDefinition:
     run: Optional[str] = None          # "once" | "per_device" (shell only)
     script: Optional[str] = None
     vars: dict[str, str] = field(default_factory=dict)
+    # Sprint 1: control flow
+    when: Optional[str] = None                      # condition string to skip step
+    platform: list[str] = field(default_factory=list)  # restrict to platform(s)
+    # Sprint 1: output capture
+    register: dict[str, str] = field(default_factory=dict)  # {var: regex}
+    # Sprint 1: wait_until fields
+    until: Optional[str] = None        # condition to stop polling
+    interval: int = 15                 # seconds between polls
+    timeout: Optional[int] = None      # max seconds (defaults to timeout_per_device)
+    on_timeout: str = "fail"           # "fail" | "continue"
 
 
 @dataclass
@@ -132,6 +143,23 @@ def _parse_step(item: dict, idx: int) -> StepDefinition:
             return [str(x) for x in v]
         return [str(v)]
 
+    # platform: accept string or list[string]
+    raw_platform = item.get("platform")
+    if raw_platform is None:
+        platform: list[str] = []
+    elif isinstance(raw_platform, str):
+        platform = [raw_platform]
+    elif isinstance(raw_platform, list):
+        platform = [str(p) for p in raw_platform]
+    else:
+        platform = []
+
+    # register: must be a dict
+    raw_register = item.get("register")
+    register: dict[str, str] = {}
+    if isinstance(raw_register, dict):
+        register = {str(k): str(v) for k, v in raw_register.items()}
+
     return StepDefinition(
         name=name,
         type=stype,
@@ -143,6 +171,13 @@ def _parse_step(item: dict, idx: int) -> StepDefinition:
         run=str(item["run"]) if "run" in item else None,
         script=str(item["script"]) if "script" in item else None,
         vars=_parse_vars(item.get("vars", {})),
+        when=str(item["when"]) if "when" in item else None,
+        platform=platform,
+        register=register,
+        until=str(item["until"]) if "until" in item else None,
+        interval=int(item.get("interval", 15)),
+        timeout=int(item["timeout"]) if "timeout" in item else None,
+        on_timeout=str(item.get("on_timeout", "fail")),
     )
 
 
@@ -178,6 +213,22 @@ def _validate(wf: WorkflowDefinition) -> None:
             if not step.runbook:
                 raise WorkflowParseError(
                     f"Step '{step.name}': device_runbook requires 'runbook'."
+                )
+        if step.type == "wait_until":
+            if not step.commands:
+                raise WorkflowParseError(
+                    f"Step '{step.name}': wait_until requires 'commands' "
+                    "(the command to poll)."
+                )
+            if not step.until:
+                raise WorkflowParseError(
+                    f"Step '{step.name}': wait_until requires 'until' "
+                    "(the success condition)."
+                )
+            if step.on_timeout not in ("fail", "continue"):
+                raise WorkflowParseError(
+                    f"Step '{step.name}': on_timeout must be 'fail' or "
+                    f"'continue' (got {step.on_timeout!r})."
                 )
 
 
