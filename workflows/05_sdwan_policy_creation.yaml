@@ -1,0 +1,213 @@
+name: Cisco SD-WAN Localized Policy Creation
+description: >
+  Creates a full localized vEdge policy on Cisco vManage via REST API.
+  The sequence is: Authenticate → Create AS Path List → Create ACL Policy
+  (two sequences) → Create Route Policy (two sequences) → Assemble vEdge
+  Localized Policy referencing the ACL and Route policy IDs.
+  Runs entirely from the relay machine via vManage REST API.
+
+parameters:
+  - VMANAGE_HOST
+  - VMANAGE_USERNAME
+  - VMANAGE_PASSWORD
+  # AS Path List
+  - AS_PATH_NAME        # e.g. MyASPath
+  - AS_DESCRIPTION
+  - AS_PATH             # e.g. ^65001_
+  # ACL Policy
+  - ACL_POLICY_NAME
+  - ACL_DESCRIPTION
+  - SOURCE_IP           # e.g. 10.0.0.0/8
+  - DESTINATION_IP      # e.g. 192.168.1.0/24
+  - PROTOCOL            # e.g. 6 (TCP)
+  - SOURCE_PORT         # e.g. 1024-65535
+  - DESTINATION_PORT1   # e.g. 80
+  - DESTINATION_PORT2   # e.g. 443
+  # Route Policy
+  - ROUTE_POLICY_NAME
+  - ROUTE_POLICY_DESCRIPTION
+  - PREFIX1             # e.g. 10.0.0.0/8
+  - PREFIX2             # e.g. 172.16.0.0/12
+  # Final Policy
+  - POLICY_NAME
+  - POLICY_DESCRIPTION
+
+vars:
+  ACL_ACTION: accept
+  ROUTE_ACTION1: accept
+  ROUTE_ACTION2: accept
+  FLOW_VISIBILITY: "true"
+  APP_VISIBILITY: "true"
+  CLOUD_QOS: "false"
+  CLOUD_QOS_SERVICE_SIDE: "false"
+  IMPLICIT_ACL_LOGGING: "false"
+  LOG_FREQUENCY: "1000"
+
+# ─── STEP MAPPING ────────────────────────────────────────────────────────────
+#  All operations target the vManage REST API (HTTPS).
+#  Step type: run_shell_script_locally / once
+# ─────────────────────────────────────────────────────────────────────────────
+
+steps:
+  - name: create_sdwan_policies
+    type: run_shell_script_locally
+    run: once
+    script: |
+      #!/bin/bash
+      set -euo pipefail
+
+      VMANAGE_HOST="{{ VMANAGE_HOST }}"
+      VMANAGE_USERNAME="{{ VMANAGE_USERNAME }}"
+      VMANAGE_PASSWORD="{{ VMANAGE_PASSWORD }}"
+      AS_PATH_NAME="{{ AS_PATH_NAME }}"
+      AS_DESCRIPTION="{{ AS_DESCRIPTION }}"
+      AS_PATH="{{ AS_PATH }}"
+      ACL_POLICY_NAME="{{ ACL_POLICY_NAME }}"
+      ACL_DESCRIPTION="{{ ACL_DESCRIPTION }}"
+      SOURCE_IP="{{ SOURCE_IP }}"
+      DESTINATION_IP="{{ DESTINATION_IP }}"
+      PROTOCOL="{{ PROTOCOL }}"
+      SOURCE_PORT="{{ SOURCE_PORT }}"
+      DESTINATION_PORT1="{{ DESTINATION_PORT1 }}"
+      DESTINATION_PORT2="{{ DESTINATION_PORT2 }}"
+      ACL_ACTION="{{ ACL_ACTION }}"
+      ROUTE_POLICY_NAME="{{ ROUTE_POLICY_NAME }}"
+      ROUTE_POLICY_DESCRIPTION="{{ ROUTE_POLICY_DESCRIPTION }}"
+      PREFIX1="{{ PREFIX1 }}"
+      PREFIX2="{{ PREFIX2 }}"
+      ROUTE_ACTION1="{{ ROUTE_ACTION1 }}"
+      ROUTE_ACTION2="{{ ROUTE_ACTION2 }}"
+      POLICY_NAME="{{ POLICY_NAME }}"
+      POLICY_DESCRIPTION="{{ POLICY_DESCRIPTION }}"
+      FLOW_VISIBILITY="{{ FLOW_VISIBILITY }}"
+      APP_VISIBILITY="{{ APP_VISIBILITY }}"
+      CLOUD_QOS="{{ CLOUD_QOS }}"
+      CLOUD_QOS_SERVICE_SIDE="{{ CLOUD_QOS_SERVICE_SIDE }}"
+      IMPLICIT_ACL_LOGGING="{{ IMPLICIT_ACL_LOGGING }}"
+      LOG_FREQUENCY="{{ LOG_FREQUENCY }}"
+
+      COOKIE_FILE=$(mktemp)
+      HEADER_FILE=$(mktemp)
+      trap 'rm -f "$COOKIE_FILE" "$HEADER_FILE"' EXIT
+
+      # ── Step 1: Authenticate ──────────────────────────────────────────────
+      echo ">>> Step 1: Authenticating to vManage ..."
+      curl -s -k -X POST \
+        -H "Content-Type: application/x-www-form-urlencoded" \
+        -c "$COOKIE_FILE" -D "$HEADER_FILE" \
+        --data-urlencode "j_username=${VMANAGE_USERNAME}" \
+        --data-urlencode "j_password=${VMANAGE_PASSWORD}" \
+        "https://${VMANAGE_HOST}/j_security_check" > /dev/null
+
+      if ! grep -qi "set-cookie" "$HEADER_FILE"; then
+        echo "ERROR: Authentication failed."; exit 1
+      fi
+
+      XSRF_TOKEN=$(curl -s -k -b "$COOKIE_FILE" \
+        "https://${VMANAGE_HOST}/dataservice/client/token")
+      echo "Authenticated. Token acquired."
+
+      _post() {
+        curl -s -k -X POST \
+          -H "Content-Type: application/json" \
+          -H "X-XSRF-TOKEN: ${XSRF_TOKEN}" \
+          -b "$COOKIE_FILE" \
+          -d "$1" "$2"
+      }
+
+      # ── Step 2: Create AS Path List ───────────────────────────────────────
+      echo ""
+      echo ">>> Step 2: Creating AS Path List '${AS_PATH_NAME}' ..."
+      AS_RESP=$(_post "{\"name\":\"${AS_PATH_NAME}\",\"type\":\"asPath\",\"description\":\"${AS_DESCRIPTION}\",\"entries\":[{\"asPath\":\"${AS_PATH}\"}]}" \
+        "https://${VMANAGE_HOST}:443/dataservice/template/policy/list/aspath")
+      echo "Response: $AS_RESP"
+      AS_POLICY_ID=$(echo "$AS_RESP" | python3 -c \
+        "import sys,json; print(json.load(sys.stdin).get('listId',''))" 2>/dev/null)
+      echo "AS Path List ID: ${AS_POLICY_ID}"
+
+      # ── Step 3: Create ACL Policy ─────────────────────────────────────────
+      echo ""
+      echo ">>> Step 3: Creating ACL Policy '${ACL_POLICY_NAME}' ..."
+      ACL_PAYLOAD=$(python3 -c "
+      import json
+      body = {
+        'name': '${ACL_POLICY_NAME}',
+        'description': '${ACL_DESCRIPTION}',
+        'type': 'acl',
+        'definition': {
+          'entries': [
+            {'sequence': 20, 'match': {'source-ip': '${SOURCE_IP}', 'destination-ip': '${DESTINATION_IP}',
+              'protocol': '${PROTOCOL}', 'source-port': '${SOURCE_PORT}', 'destination-port': '${DESTINATION_PORT1}'},
+             'action': '${ACL_ACTION}'},
+            {'sequence': 30, 'match': {'source-ip': '${SOURCE_IP}', 'destination-ip': '${DESTINATION_IP}',
+              'protocol': '${PROTOCOL}', 'source-port': '${SOURCE_PORT}', 'destination-port': '${DESTINATION_PORT2}'},
+             'action': '${ACL_ACTION}'}
+          ]
+        }
+      }
+      print(json.dumps(body))
+      ")
+      ACL_RESP=$(_post "$ACL_PAYLOAD" \
+        "https://${VMANAGE_HOST}:443/dataservice/template/policy/definition/acl")
+      echo "Response: $ACL_RESP"
+      ACL_POLICY_ID=$(echo "$ACL_RESP" | python3 -c \
+        "import sys,json; print(json.load(sys.stdin).get('definitionId',''))" 2>/dev/null)
+      echo "ACL Policy ID: ${ACL_POLICY_ID}"
+
+      # ── Step 4: Create Route Policy ───────────────────────────────────────
+      echo ""
+      echo ">>> Step 4: Creating Route Policy '${ROUTE_POLICY_NAME}' ..."
+      ROUTE_PAYLOAD=$(python3 -c "
+      import json
+      body = {
+        'name': '${ROUTE_POLICY_NAME}',
+        'description': '${ROUTE_POLICY_DESCRIPTION}',
+        'type': 'vedgeroute',
+        'definition': {
+          'sequence': [
+            {'sequenceId': 10, 'match': {'prefix': '${PREFIX1}'}, 'action': '${ROUTE_ACTION1}'},
+            {'sequenceId': 20, 'match': {'prefix': '${PREFIX2}'}, 'action': '${ROUTE_ACTION2}'}
+          ]
+        }
+      }
+      print(json.dumps(body))
+      ")
+      ROUTE_RESP=$(_post "$ROUTE_PAYLOAD" \
+        "https://${VMANAGE_HOST}:443/dataservice/template/policy/definition/vedgeroute")
+      echo "Response: $ROUTE_RESP"
+      ROUTE_POLICY_ID=$(echo "$ROUTE_RESP" | python3 -c \
+        "import sys,json; print(json.load(sys.stdin).get('definitionId',''))" 2>/dev/null)
+      echo "Route Policy ID: ${ROUTE_POLICY_ID}"
+
+      # ── Step 5: Create vEdge Localized Policy ─────────────────────────────
+      echo ""
+      echo ">>> Step 5: Creating vEdge Localized Policy '${POLICY_NAME}' ..."
+      POLICY_PAYLOAD=$(python3 -c "
+      import json
+      assembly = [
+        {'definitionId': '${ACL_POLICY_ID}', 'type': 'acl'},
+        {'definitionId': '${ROUTE_POLICY_ID}', 'type': 'vedgeRoute'}
+      ]
+      settings = {
+        'flowVisibility': '${FLOW_VISIBILITY}', 'appVisibility': '${APP_VISIBILITY}',
+        'cloudQos': '${CLOUD_QOS}', 'cloudQosServiceSide': '${CLOUD_QOS_SERVICE_SIDE}',
+        'implicitAclLogging': '${IMPLICIT_ACL_LOGGING}', 'logFrequency': '${LOG_FREQUENCY}'
+      }
+      body = {
+        'policyName': '${POLICY_NAME}',
+        'policyDescription': '${POLICY_DESCRIPTION}',
+        'policyType': 'feature',
+        'policyDefinition': {'assembly': assembly, 'settings': settings},
+        'policyDefinitionEdit': {'assembly': assembly, 'settings': settings}
+      }
+      print(json.dumps(body))
+      ")
+      POLICY_RESP=$(_post "$POLICY_PAYLOAD" \
+        "https://${VMANAGE_HOST}:443/dataservice/template/policy/vedge")
+      echo "Response: $POLICY_RESP"
+
+      echo ""
+      echo ">>> Policy creation complete."
+      echo "    AS Path ID: ${AS_POLICY_ID}"
+      echo "    ACL Policy ID: ${ACL_POLICY_ID}"
+      echo "    Route Policy ID: ${ROUTE_POLICY_ID}"

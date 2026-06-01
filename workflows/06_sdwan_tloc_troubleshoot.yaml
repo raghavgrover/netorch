@@ -1,0 +1,190 @@
+name: Cisco SD-WAN TLOC Alarm Troubleshoot
+description: >
+  Troubleshoots SD-WAN TLOC (Transport Location) alarms on Cisco vEdge devices.
+  Workflow:
+    1. Authenticates to vManage and verifies the target vEdge IPs are reachable.
+    2. Checks control connections on the vEdge device.
+    3. If any control connection is down, inspects interface state.
+    4. Attempts to bring up down interfaces in VPN 0.
+    5. Re-verifies interface state after remediation.
+
+  *** PLATFORM NOTE ***
+  Cisco vEdge (Viptela) uses a proprietary CLI (not IOS-XE). There is no
+  netorch SSH driver for Viptela vEdge. All vEdge SSH access in this workflow
+  uses sshpass from the relay machine via run_shell_script_locally steps.
+  If the target is an IOS-XE cEdge (not a Viptela vEdge), Steps 2-5 can be
+  converted to device_commands / device_config once the cEdge is added to the
+  netorch inventory with platform=cisco_xe.
+
+parameters:
+  - VMANAGE_HOST          # vManage IP or FQDN (no https://)
+  - VMANAGE_USERNAME      # vManage login
+  - VMANAGE_PASSWORD
+  - VEDGE_IPS             # Comma-separated list of vEdge IPs to check
+  - VEDGE_SSH_USER        # SSH username for vEdge device(s)
+  - VEDGE_SSH_PASSWORD    # SSH password for vEdge device(s)
+
+# ─── STEP MAPPING ────────────────────────────────────────────────────────────
+#  Step 1 — run_shell_script_locally/once : vManage auth + ping check
+#  Step 2 — run_shell_script_locally/once : vEdge control connection check
+#            (sshpass required — Viptela CLI not supported by netorch drivers)
+#  Step 3 — run_shell_script_locally/once : Interface remediation if needed
+#
+#  INFEASIBILITY NOTE:
+#  Steps 2-3 use raw SSH via sshpass because Viptela vEdge uses a proprietary
+#  CLI that is not supported by Netmiko or the netorch driver framework.
+#  The config syntax (e.g. "vpn 0 / interface X / no shutdown") is Viptela-
+#  specific and differs from IOS-XE.  If your environment uses IOS-XE cEdge
+#  devices (cisco_xe in netorch inventory), replace steps 2-3 with:
+#    - type: device_commands  (show control connections, show interface description)
+#    - type: device_config    (vpn 0 / interface / no shutdown)
+# ─────────────────────────────────────────────────────────────────────────────
+
+steps:
+  - name: vmanage_auth_and_ping_check
+    type: run_shell_script_locally
+    run: once
+    script: |
+      #!/bin/bash
+      set -euo pipefail
+
+      VMANAGE_HOST="{{ VMANAGE_HOST }}"
+      VMANAGE_USERNAME="{{ VMANAGE_USERNAME }}"
+      VMANAGE_PASSWORD="{{ VMANAGE_PASSWORD }}"
+      VEDGE_IPS="{{ VEDGE_IPS }}"
+
+      COOKIE_FILE=$(mktemp)
+      HEADER_FILE=$(mktemp)
+      trap 'rm -f "$COOKIE_FILE" "$HEADER_FILE"' EXIT
+
+      # ── Authenticate to vManage ───────────────────────────────────────────
+      echo ">>> Step 1: Authenticating to vManage ..."
+      curl -s -k -X POST \
+        -H "Content-Type: application/x-www-form-urlencoded" \
+        -c "$COOKIE_FILE" -D "$HEADER_FILE" \
+        --data-urlencode "j_username=${VMANAGE_USERNAME}" \
+        --data-urlencode "j_password=${VMANAGE_PASSWORD}" \
+        "https://${VMANAGE_HOST}/j_security_check" > /dev/null
+
+      if ! grep -qi "set-cookie" "$HEADER_FILE"; then
+        echo "ERROR: vManage authentication failed."; exit 1
+      fi
+      echo "vManage authentication successful."
+
+      # ── Ping each vEdge device ────────────────────────────────────────────
+      echo ""
+      echo ">>> Step 2: Pinging vEdge devices ..."
+      IFS=',' read -ra IPS <<< "$VEDGE_IPS"
+      ALL_OK=true
+      for IP in "${IPS[@]}"; do
+        IP=$(echo "$IP" | tr -d ' ')
+        echo "  Pinging ${IP} ..."
+        if ! ping -c 5 -W 2 "$IP" &>/dev/null; then
+          echo "  ERROR: ${IP} is unreachable. Verify physical connectivity."
+          ALL_OK=false
+        else
+          echo "  ${IP} is reachable."
+        fi
+      done
+      if [ "$ALL_OK" = "false" ]; then
+        echo "ERROR: One or more vEdge devices are unreachable. Aborting."
+        exit 2
+      fi
+      echo "All vEdge devices are reachable."
+
+  - name: check_and_remediate_vedge
+    type: run_shell_script_locally
+    run: once
+    script: |
+      #!/bin/bash
+      # NOTE: Uses sshpass for Viptela vEdge CLI access.
+      # Requires sshpass to be installed on the relay machine:
+      #   yum install -y sshpass
+      set -euo pipefail
+
+      VEDGE_IPS="{{ VEDGE_IPS }}"
+      VEDGE_SSH_USER="{{ VEDGE_SSH_USER }}"
+      VEDGE_SSH_PASSWORD="{{ VEDGE_SSH_PASSWORD }}"
+
+      IFS=',' read -ra IPS <<< "$VEDGE_IPS"
+      FIRST_IP=$(echo "${IPS[0]}" | tr -d ' ')
+
+      SSH_OPTS="-o StrictHostKeyChecking=no -o ConnectTimeout=10"
+      _ssh() {
+        sshpass -p "${VEDGE_SSH_PASSWORD}" ssh $SSH_OPTS \
+          "${VEDGE_SSH_USER}@${FIRST_IP}" "$1" 2>&1
+      }
+
+      # ── Step 3: Check control connections ────────────────────────────────
+      echo ">>> Step 3: Checking control connections on vEdge ${FIRST_IP} ..."
+      CTRL=$(  _ssh "show control connections")
+      echo "$CTRL"
+
+      DOWN_FOUND=false
+      for IP in "${IPS[@]}"; do
+        IP=$(echo "$IP" | tr -d ' ')
+        LINE=$(echo "$CTRL" | grep "$IP" || true)
+        if [ -z "$LINE" ]; then
+          echo "  WARNING: No control connection found for $IP"
+          DOWN_FOUND=true
+        elif echo "$LINE" | grep -qi "up"; then
+          echo "  Control connection for $IP: UP"
+        else
+          echo "  WARNING: Control connection for $IP: DOWN"
+          DOWN_FOUND=true
+        fi
+      done
+
+      if [ "$DOWN_FOUND" = "false" ]; then
+        echo "All control connections are UP. No further action needed."
+        exit 0
+      fi
+
+      # ── Step 4: Check interface state ────────────────────────────────────
+      echo ""
+      echo ">>> Step 4: Checking interface state on ${FIRST_IP} ..."
+      IFACE_STATUS=$(_ssh "show interface description")
+      echo "$IFACE_STATUS"
+
+      DOWN_IFACES=$(echo "$IFACE_STATUS" | awk 'NR>2 && $2=="Down" {print $1}')
+      if [ -z "$DOWN_IFACES" ]; then
+        echo "No down interfaces found. Control connection may be down for other reasons."
+        echo "Manual investigation recommended."
+        exit 2
+      fi
+      echo ""
+      echo "Down interfaces: ${DOWN_IFACES}"
+
+      # ── Step 5: Bring up down interfaces (Viptela VPN 0 context) ─────────
+      echo ""
+      echo ">>> Step 5: Bringing up down interfaces ..."
+      for IFACE in $DOWN_IFACES; do
+        echo "  Sending 'no shutdown' for: ${IFACE}"
+        sshpass -p "${VEDGE_SSH_PASSWORD}" ssh $SSH_OPTS \
+          "${VEDGE_SSH_USER}@${FIRST_IP}" \
+          "conf t
+      vpn 0
+      interface ${IFACE}
+      no shutdown
+      exit
+      exit
+      exit" 2>&1
+        echo "  Done: ${IFACE}"
+      done
+
+      # ── Step 6: Verify interface state after remediation ─────────────────
+      echo ""
+      echo ">>> Step 6: Re-checking interface state after remediation (waiting 5s) ..."
+      sleep 5
+      IFACE_AFTER=$(_ssh "show interface description")
+      echo "$IFACE_AFTER"
+
+      DOWN_STILL=$(echo "$IFACE_AFTER" | awk 'NR>2 && $2=="Down" {print $1}')
+      if [ -n "$DOWN_STILL" ]; then
+        echo "ERROR: The following interfaces are still down: ${DOWN_STILL}"
+        echo "Manual intervention required."
+        exit 2
+      fi
+      echo ""
+      echo "SUCCESS: All interfaces are now UP."
+      echo "Previously down interfaces: ${DOWN_IFACES}"

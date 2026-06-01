@@ -1,0 +1,21 @@
+name: test_sprint1_platform
+description: "Sprint1 — platform filter"
+steps:
+  - name: cisco_step
+    type: device_commands
+    platform: [cisco_ios]
+    commands:
+      - "show version | include IOS"
+
+  - name: linux_step
+    type: device_commands
+    platform: [linux]
+    commands:
+      - "uname -r"
+
+  - name: report
+    type: run_shell_script_locally
+    run: once
+    script: |
+      echo "CISCO_OUT=$STEP_CISCO_STEP_OUTPUT"
+      echo "LINUX_OUT=$STEP_LINUX_STEP_OUTPUT"

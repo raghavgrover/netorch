@@ -1,0 +1,183 @@
+name: Cisco ISE Add NAD with TACACS
+description: >
+  Two-phase automation:
+    Phase A — Adds a Network Access Device (NAD) to Cisco ISE via ERS REST API
+              (runs on the relay machine targeting the ISE node on port 9060).
+    Phase B — Configures TACACS+ AAA on the actual IOS network device via SSH
+              (runs natively through the netorch cisco_ios / cisco_xe driver).
+  The device targeted in Phase B must be present in the netorch inventory with
+  platform cisco_ios or cisco_xe.
+
+parameters:
+  - ISE_HOSTNAME       # ISE IP or FQDN (no port/scheme)
+  - ISE_USERNAME
+  - ISE_PASSWORD
+  - DEVICE_NAME        # NAD hostname as it will appear in ISE
+  - DEVICE_IP          # IP of the NAD (must match inventory)
+  - DEVICE_GROUP       # Full ISE group path e.g. Network Device Group#Location#HQ
+  - DESCRIPTION        # NAD description in ISE
+  - TACACS_KEY         # Shared secret for TACACS+
+  - TACACS_SERVER_IP   # ISE PSN IP that handles TACACS
+  - TACACS_SERVER_NAME # IOS server object name e.g. ISE-TACACS
+  - AAA_GROUP_NAME     # IOS AAA group name e.g. ISE_GROUP
+  - AUTH_RULE_NAME     # aaa authentication rule name
+  - AUTHZ_RULE_NAME    # aaa authorization rule name
+  - ACCT_RULE_NAME     # aaa accounting rule name
+  - RADIUS_SECRET      # RADIUS shared secret for authN settings in ISE
+  - SNMP_RO_COMMUNITY  # default: public
+
+vars:
+  SNMP_RO_COMMUNITY: public
+  SNMP_VERSION: TWO_C
+  COA_PORT: "1700"
+  NETWORK_PROTOCOL: RADIUS
+
+# ─── STEP MAPPING ────────────────────────────────────────────────────────────
+#  Step 1 — run_shell_script_locally/once  : ISE REST API operations
+#  Step 2 — device_config                  : TACACS AAA config on IOS device
+#  Step 3 — device_commands                : Validate TACACS config on device
+# ─────────────────────────────────────────────────────────────────────────────
+
+steps:
+  - name: ise_add_nad
+    type: run_shell_script_locally
+    run: once
+    script: |
+      #!/bin/bash
+      set -euo pipefail
+
+      ISE_HOSTNAME="{{ ISE_HOSTNAME }}"
+      ISE_USERNAME="{{ ISE_USERNAME }}"
+      ISE_PASSWORD="{{ ISE_PASSWORD }}"
+      DEVICE_NAME="{{ DEVICE_NAME }}"
+      DEVICE_IP="{{ DEVICE_IP }}"
+      DEVICE_GROUP="{{ DEVICE_GROUP }}"
+      DESCRIPTION="{{ DESCRIPTION }}"
+      TACACS_KEY="{{ TACACS_KEY }}"
+      RADIUS_SECRET="{{ RADIUS_SECRET }}"
+      SNMP_RO_COMMUNITY="{{ SNMP_RO_COMMUNITY }}"
+
+      ISE_AUTH=$(echo -n "${ISE_USERNAME}:${ISE_PASSWORD}" | base64)
+      ISE_API="https://${ISE_HOSTNAME}:9060/ers/config"
+
+      # ── Step A1: Check if NAD already exists ─────────────────────────────
+      echo ">>> Step A1: Checking if NAD '${DEVICE_NAME}' already exists ..."
+      CHECK=$(curl -s -k -X GET \
+        -H "Accept: application/json" \
+        -H "Authorization: Basic ${ISE_AUTH}" \
+        "${ISE_API}/networkdevice?filter=name.EQ.${DEVICE_NAME}")
+      EXISTS=$(echo "$CHECK" | python3 -c \
+        "import sys,json; d=json.load(sys.stdin); print(d.get('SearchResult',{}).get('total',0))" 2>/dev/null || echo "0")
+      if [ "$EXISTS" -gt 0 ]; then
+        echo "ERROR: NAD '${DEVICE_NAME}' already exists in ISE. Stopping."
+        exit 2
+      fi
+      echo "NAD does not exist — proceeding."
+
+      # ── Step A2: Validate device group exists ────────────────────────────
+      echo ""
+      echo ">>> Step A2: Validating device group ..."
+      ENCODED_GROUP=$(python3 -c "import urllib.parse; print(urllib.parse.quote('${DEVICE_GROUP}'))")
+      GRP=$(curl -s -k -X GET \
+        -H "Accept: application/json" \
+        -H "Authorization: Basic ${ISE_AUTH}" \
+        "${ISE_API}/networkdevicegroup?filter=name.EQ.${ENCODED_GROUP}")
+      GRP_TOTAL=$(echo "$GRP" | python3 -c \
+        "import sys,json; print(json.load(sys.stdin).get('SearchResult',{}).get('total',0))" 2>/dev/null || echo "0")
+      if [ "$GRP_TOTAL" -eq 0 ]; then
+        echo "ERROR: Device group '${DEVICE_GROUP}' not found in ISE."
+        exit 2
+      fi
+      echo "Device group validated."
+
+      # ── Step A3: Create NAD ───────────────────────────────────────────────
+      echo ""
+      echo ">>> Step A3: Creating NAD '${DEVICE_NAME}' in ISE ..."
+      NAD_PAYLOAD=$(cat <<EOF
+      {
+        "NetworkDevice": {
+          "name": "${DEVICE_NAME}",
+          "description": "${DESCRIPTION}",
+          "profileName": "Cisco",
+          "NetworkDeviceGroupList": ["${DEVICE_GROUP}"],
+          "NetworkDeviceIPList": [{"ipaddress": "${DEVICE_IP}", "mask": 32}],
+          "authenticationSettings": {
+            "networkProtocol": "RADIUS",
+            "radiusSharedSecret": "${RADIUS_SECRET}",
+            "enableKeyWrap": false
+          },
+          "coaPort": 1700,
+          "snmpsettings": {
+            "roCommunity": "${SNMP_RO_COMMUNITY}",
+            "version": "TWO_C",
+            "pollingInterval": 600,
+            "linkTrapQuery": true,
+            "macTrapQuery": true
+          },
+          "tacacsSettings": {
+            "sharedSecret": "${TACACS_KEY}",
+            "connectModeOptions": "ON"
+          },
+          "trustsecsettings": {
+            "deviceAuthenticationSettings": {
+              "sgaDeviceId": "${DEVICE_NAME}",
+              "sgaDevicePassword": "sga_password"
+            }
+          }
+        }
+      }
+      EOF
+      )
+      CREATE=$(curl -s -k -X POST \
+        -H "Content-Type: application/json" \
+        -H "Accept: application/json" \
+        -H "Authorization: Basic ${ISE_AUTH}" \
+        -d "$NAD_PAYLOAD" \
+        "${ISE_API}/networkdevice")
+      echo "ISE response: $CREATE"
+
+      # ── Step A4: Verify NAD was created ───────────────────────────────────
+      echo ""
+      echo ">>> Step A4: Verifying NAD creation ..."
+      VERIFY=$(curl -s -k -X GET \
+        -H "Accept: application/json" \
+        -H "Authorization: Basic ${ISE_AUTH}" \
+        "${ISE_API}/networkdevice?filter=name.EQ.${DEVICE_NAME}")
+      VERIFIED=$(echo "$VERIFY" | python3 -c \
+        "import sys,json; print(json.load(sys.stdin).get('SearchResult',{}).get('total',0))" 2>/dev/null || echo "0")
+      if [ "$VERIFIED" -eq 0 ]; then
+        echo "ERROR: NAD not found after creation. Check ISE manually."
+        exit 2
+      fi
+      echo "NAD '${DEVICE_NAME}' confirmed in ISE."
+
+  - name: configure_tacacs_aaa
+    type: device_config
+    commands:
+      - "aaa new-model"
+      - "tacacs server {{ TACACS_SERVER_NAME }}"
+      - " address ipv4 {{ TACACS_SERVER_IP }}"
+      - " key {{ TACACS_KEY }}"
+      - " exit"
+      - "aaa group server tacacs+ {{ AAA_GROUP_NAME }}"
+      - " server name {{ TACACS_SERVER_NAME }}"
+      - " exit"
+      - "aaa authentication login {{ AUTH_RULE_NAME }} group {{ AAA_GROUP_NAME }} local"
+      - "aaa authentication enable default group {{ AAA_GROUP_NAME }} enable"
+      - "aaa authorization commands 15 {{ AUTHZ_RULE_NAME }} group {{ AAA_GROUP_NAME }} local"
+      - "aaa authorization config-commands"
+      - "aaa accounting exec {{ ACCT_RULE_NAME }} start-stop group {{ AAA_GROUP_NAME }}"
+      - "aaa accounting commands 15 {{ ACCT_RULE_NAME }} start-stop group {{ AAA_GROUP_NAME }}"
+      - "line vty 0 4"
+      - " login authentication {{ AUTH_RULE_NAME }}"
+      - " authorization commands 15 {{ AUTHZ_RULE_NAME }}"
+      - " accounting commands 15 {{ ACCT_RULE_NAME }}"
+      - " accounting exec {{ ACCT_RULE_NAME }}"
+      - " exit"
+
+  - name: validate_tacacs_config
+    type: device_commands
+    commands:
+      - "show running-config | include tacacs"
+      - "show running-config | include aaa"
+      - "show running-config | section line vty"

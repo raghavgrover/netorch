@@ -1,0 +1,21 @@
+name: test_sprint1_register
+description: "Sprint1 — register capture"
+steps:
+  - name: get_version
+    type: device_commands
+    platform: [cisco_ios]
+    commands:
+      - "show version | include Version"
+    register:
+      ios_ver: 'Version ([0-9][^,]+)'
+
+  - name: use_capture
+    type: run_shell_script_locally
+    run: once
+    script: |
+      echo "CAPTURED={{ steps.get_version.captured.ios_ver }}"
+      if [ -n "$STEP_GET_VERSION_OUTPUT" ]; then
+        echo "ROLLUP_OK"
+      else
+        echo "ROLLUP_MISSING"
+      fi

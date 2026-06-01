@@ -1,0 +1,22 @@
+name: test_sprint1_wait_until
+description: "Sprint1 — wait_until"
+steps:
+  - name: wait_quick_match
+    type: wait_until
+    platform: [cisco_ios]
+    commands:
+      - "show clock"
+    until: "output contains :"
+    interval: 5
+    timeout: 30
+    on_timeout: fail
+
+  - name: wait_timeout_continue
+    type: wait_until
+    platform: [cisco_ios]
+    commands:
+      - "show version | include IOS"
+    until: "output contains IMPOSSIBLE_XYZ_CONDITION"
+    interval: 5
+    timeout: 12
+    on_timeout: continue

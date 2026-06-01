@@ -1,0 +1,107 @@
+name: Cisco ACI SDN Provisioning
+description: >
+  Provisions the full ACI logical fabric hierarchy on a Cisco APIC controller
+  via the ACI REST API. Creates: Tenant, VRF, Bridge Domain, Subnet,
+  Application Profile, and EPG in sequence. Runs from the netorch relay
+  machine — no SSH to inventory devices required.
+
+parameters:
+  - ACI_URL          # APIC IP or FQDN (no https://)
+  - ACI_USERNAME
+  - ACI_PASSWORD
+  - TENANT_NAME
+  - VRF_NAME
+  - BRIDGE_DOMAIN_NAME
+  - BD_GATEWAY       # e.g. 10.10.10.1
+  - BD_MASK          # e.g. 24
+  - APP_PROFILE_NAME
+  - EPG_NAME
+
+# ─── STEP MAPPING ────────────────────────────────────────────────────────────
+#  All operations target the APIC REST API.  The APIC is NOT an SSH device in
+#  the netorch inventory; it is an HTTP(S) controller reached from the relay.
+#  Step type: run_shell_script_locally / once
+# ─────────────────────────────────────────────────────────────────────────────
+
+steps:
+  - name: aci_provision_hierarchy
+    type: run_shell_script_locally
+    run: once
+    script: |
+      #!/bin/bash
+      set -euo pipefail
+
+      ACI_URL="{{ ACI_URL }}"
+      ACI_USERNAME="{{ ACI_USERNAME }}"
+      ACI_PASSWORD="{{ ACI_PASSWORD }}"
+      TENANT_NAME="{{ TENANT_NAME }}"
+      VRF_NAME="{{ VRF_NAME }}"
+      BRIDGE_DOMAIN_NAME="{{ BRIDGE_DOMAIN_NAME }}"
+      BD_GATEWAY="{{ BD_GATEWAY }}"
+      BD_MASK="{{ BD_MASK }}"
+      APP_PROFILE_NAME="{{ APP_PROFILE_NAME }}"
+      EPG_NAME="{{ EPG_NAME }}"
+
+      BASE="https://${ACI_URL}"
+      COOKIE_FILE=$(mktemp)
+      trap 'rm -f "$COOKIE_FILE"' EXIT
+
+      # ── Step 1: Authenticate ──────────────────────────────────────────────
+      echo ">>> Authenticating to APIC at ${BASE} ..."
+      AUTH_RESP=$(curl -s -k -X POST \
+        -H "Content-Type: application/json" \
+        -c "$COOKIE_FILE" \
+        -d "{\"aaaUser\":{\"attributes\":{\"name\":\"${ACI_USERNAME}\",\"pwd\":\"${ACI_PASSWORD}\"}}}" \
+        "${BASE}/api/aaaLogin.json")
+      TOKEN=$(echo "$AUTH_RESP" | python3 -c \
+        "import sys,json; print(json.load(sys.stdin)['imdata'][0]['aaaLogin']['attributes']['token'])" 2>/dev/null)
+      if [ -z "$TOKEN" ]; then
+        echo "ERROR: Authentication failed."
+        echo "$AUTH_RESP"
+        exit 1
+      fi
+      echo "Authentication successful."
+
+      _post() {
+        local url="$1"; local data="$2"
+        curl -s -k -X POST \
+          -H "Content-Type: application/json" \
+          -H "APIC-cookie: ${TOKEN}" \
+          -b "$COOKIE_FILE" \
+          -d "$data" "$url"
+      }
+
+      # ── Step 2: Create Tenant ─────────────────────────────────────────────
+      echo ">>> Creating Tenant '${TENANT_NAME}' ..."
+      _post "${BASE}/api/mo/uni.json" \
+        "{\"fvTenant\":{\"attributes\":{\"name\":\"${TENANT_NAME}\",\"status\":\"created,modified\"}}}"
+
+      # ── Step 3: Create VRF ────────────────────────────────────────────────
+      echo ">>> Creating VRF '${VRF_NAME}' under Tenant '${TENANT_NAME}' ..."
+      _post "${BASE}/api/mo/uni/tn-${TENANT_NAME}.json" \
+        "{\"fvCtx\":{\"attributes\":{\"name\":\"${VRF_NAME}\",\"status\":\"created,modified\"}}}"
+
+      # ── Step 4: Create Bridge Domain ─────────────────────────────────────
+      echo ">>> Creating Bridge Domain '${BRIDGE_DOMAIN_NAME}' ..."
+      _post "${BASE}/api/mo/uni/tn-${TENANT_NAME}.json" \
+        "{\"fvBD\":{\"attributes\":{\"name\":\"${BRIDGE_DOMAIN_NAME}\",\"mac\":\"00:22:BD:F8:19:FF\",\"status\":\"created,modified\"},\"children\":[{\"fvRsCtx\":{\"attributes\":{\"tnFvCtxName\":\"${VRF_NAME}\"}}}]}}"
+
+      # ── Step 5: Create Subnet ─────────────────────────────────────────────
+      echo ">>> Creating Subnet ${BD_GATEWAY}/${BD_MASK} in BD '${BRIDGE_DOMAIN_NAME}' ..."
+      _post "${BASE}/api/mo/uni/tn-${TENANT_NAME}/BD-${BRIDGE_DOMAIN_NAME}.json" \
+        "{\"fvSubnet\":{\"attributes\":{\"ip\":\"${BD_GATEWAY}/${BD_MASK}\",\"scope\":\"public\",\"status\":\"created,modified\"}}}"
+
+      # ── Step 6: Create Application Profile ───────────────────────────────
+      echo ">>> Creating Application Profile '${APP_PROFILE_NAME}' ..."
+      _post "${BASE}/api/mo/uni/tn-${TENANT_NAME}.json" \
+        "{\"fvAp\":{\"attributes\":{\"name\":\"${APP_PROFILE_NAME}\",\"status\":\"created,modified\"}}}"
+
+      # ── Step 7: Create EPG ────────────────────────────────────────────────
+      echo ">>> Creating EPG '${EPG_NAME}' ..."
+      _post "${BASE}/api/mo/uni/tn-${TENANT_NAME}/ap-${APP_PROFILE_NAME}.json" \
+        "{\"fvAEPg\":{\"attributes\":{\"name\":\"${EPG_NAME}\",\"status\":\"created,modified\"},\"children\":[{\"fvRsBd\":{\"attributes\":{\"tnFvBDName\":\"${BRIDGE_DOMAIN_NAME}\"}}}]}}"
+
+      echo ""
+      echo ">>> ACI provisioning complete."
+      echo "    Tenant: ${TENANT_NAME} | VRF: ${VRF_NAME} | BD: ${BRIDGE_DOMAIN_NAME}"
+      echo "    Subnet: ${BD_GATEWAY}/${BD_MASK} | AP: ${APP_PROFILE_NAME} | EPG: ${EPG_NAME}"

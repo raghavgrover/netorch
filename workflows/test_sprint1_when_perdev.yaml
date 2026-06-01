@@ -1,0 +1,14 @@
+name: test_sprint1_when_perdev
+description: "Sprint1 — per-device when"
+steps:
+  - name: check_ios
+    type: device_commands
+    platform: [cisco_ios]
+    commands:
+      - "show version | include IOS"
+
+  - name: ios_only_followup
+    type: device_commands
+    when: "steps.check_ios.output contains IOS"
+    commands:
+      - "show clock"

@@ -59,3 +59,18 @@ Thumbs.db
 dist/
 build/
 *.egg-info/
+
+# --- SQLite / database runtime files (DB migrated to PostgreSQL) ---
+*.db
+*.db-shm
+*.db-wal
+
+# --- RPM build artifacts ---
+*.rpm
+
+# --- Session / export files ---
+session_export.txt
+
+# --- Claude Code / AI assistant files (machine-local, not for repo) ---
+.claude/
+CLAUDE.md
