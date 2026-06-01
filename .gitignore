@@ -71,6 +71,11 @@ build/
 # --- Session / export files ---
 session_export.txt
 
+# --- Per-instance operator files (not for repo) ---
+# These are created/edited per deployment — not source-controlled
+workflows/
+runbooks/
+
 # --- Claude Code / AI assistant files (machine-local, not for repo) ---
 .claude/
 CLAUDE.md

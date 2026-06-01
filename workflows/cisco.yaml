@@ -1,9 +1,0 @@
-name: My Workflow
-description: What this workflow does
-parameters: []
-vars: {}
-steps:
-  - name: Step 1
-    type: device_commands
-    commands:
-      - show version
