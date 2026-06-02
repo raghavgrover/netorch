@@ -73,9 +73,19 @@ class JobStore:
         counts = db.get_job_summary_counts(job_id)
         if counts["failed"] == 0 and counts["success"] > 0:
             status = JobStatus.completed.value
+        elif counts["success"] == 0 and counts["failed"] == 0:
+            # No device rows at all — typical of shell/once-only workflows.
+            # Fall back to workflow_step_outputs exit codes to determine status.
+            step_rows = db.get_step_outputs(job_id)
+            if not step_rows:
+                status = JobStatus.failed.value
+            elif any(r.get("exit_code", 0) != 0 for r in step_rows):
+                # Some steps failed but the workflow continued (on_error: continue)
+                status = JobStatus.partial_failure.value
+            else:
+                status = JobStatus.completed.value
         elif counts["success"] == 0:
-            # No successes — includes the case where no device results were
-            # written at all (e.g. all devices skipped due to earlier failures)
+            # Has device entries but all failed
             status = JobStatus.failed.value
         else:
             status = JobStatus.partial_failure.value

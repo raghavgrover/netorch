@@ -28,6 +28,16 @@ VALID_RUN_VALUES = {"once", "per_device"}
 # Regex for {{ VAR_NAME }} substitution
 _VAR_RE = re.compile(r"\{\{\s*(\S+?)\s*\}\}")
 
+VALID_ON_ERROR_ACTIONS = {"stop", "continue", "rollback"}
+
+
+@dataclass
+class OnErrorConfig:
+    """Configuration for what happens when a step fails."""
+    action: str = "stop"                    # "stop" | "continue" | "rollback"
+    message: Optional[str] = None           # optional custom failure message
+    rollback_steps: list = field(default_factory=list)  # list[StepDefinition]
+
 
 @dataclass
 class StepDefinition:
@@ -51,6 +61,8 @@ class StepDefinition:
     interval: int = 15                 # seconds between polls
     timeout: Optional[int] = None      # max seconds (defaults to timeout_per_device)
     on_timeout: str = "fail"           # "fail" | "continue"
+    # on_error: what to do when this step fails
+    on_error: OnErrorConfig = field(default_factory=OnErrorConfig)
 
 
 @dataclass
@@ -160,6 +172,9 @@ def _parse_step(item: dict, idx: int) -> StepDefinition:
     if isinstance(raw_register, dict):
         register = {str(k): str(v) for k, v in raw_register.items()}
 
+    # on_error: optional dict with action, message, rollback_steps
+    on_error = _parse_on_error(item.get("on_error"), name)
+
     return StepDefinition(
         name=name,
         type=stype,
@@ -178,7 +193,34 @@ def _parse_step(item: dict, idx: int) -> StepDefinition:
         interval=int(item.get("interval", 15)),
         timeout=int(item["timeout"]) if "timeout" in item else None,
         on_timeout=str(item.get("on_timeout", "fail")),
+        on_error=on_error,
     )
+
+
+def _parse_on_error(raw, step_name: str) -> OnErrorConfig:
+    """Parse the on_error: block for a step."""
+    if not raw:
+        return OnErrorConfig()
+    if not isinstance(raw, dict):
+        raise WorkflowParseError(
+            f"Step '{step_name}': on_error must be a mapping "
+            f"(action, message, rollback_steps)."
+        )
+    action = str(raw.get("action", "stop"))
+    if action not in VALID_ON_ERROR_ACTIONS:
+        raise WorkflowParseError(
+            f"Step '{step_name}': on_error.action must be one of "
+            f"{sorted(VALID_ON_ERROR_ACTIONS)} (got {action!r})."
+        )
+    message = str(raw["message"]) if "message" in raw else None
+    raw_rollback = raw.get("rollback_steps", [])
+    if not isinstance(raw_rollback, list):
+        raise WorkflowParseError(
+            f"Step '{step_name}': on_error.rollback_steps must be a list."
+        )
+    rollback_steps = [_parse_step(s, i + 1) for i, s in enumerate(raw_rollback)
+                      if isinstance(s, dict)]
+    return OnErrorConfig(action=action, message=message, rollback_steps=rollback_steps)
 
 
 def _validate(wf: WorkflowDefinition) -> None:
@@ -229,6 +271,30 @@ def _validate(wf: WorkflowDefinition) -> None:
                 raise WorkflowParseError(
                     f"Step '{step.name}': on_timeout must be 'fail' or "
                     f"'continue' (got {step.on_timeout!r})."
+                )
+        # on_error validation
+        if step.on_error.action == "rollback" and not step.on_error.rollback_steps:
+            raise WorkflowParseError(
+                f"Step '{step.name}': on_error.action is 'rollback' but "
+                f"rollback_steps is empty."
+            )
+        # Rollback steps themselves must be valid (basic field checks only —
+        # they cannot have their own on_error to avoid infinite nesting)
+        for rb in step.on_error.rollback_steps:
+            if rb.type not in VALID_STEP_TYPES:
+                raise WorkflowParseError(
+                    f"Step '{step.name}': rollback step '{rb.name}' has "
+                    f"unknown type '{rb.type}'."
+                )
+            if rb.type in ("device_commands", "device_config") and not rb.commands:
+                raise WorkflowParseError(
+                    f"Step '{step.name}': rollback step '{rb.name}' "
+                    f"({rb.type}) requires 'commands'."
+                )
+            if rb.type in ("shell", "run_shell_script_locally") and not rb.script:
+                raise WorkflowParseError(
+                    f"Step '{step.name}': rollback step '{rb.name}' "
+                    f"requires 'script'."
                 )
 
 

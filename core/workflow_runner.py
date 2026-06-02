@@ -170,15 +170,33 @@ def _execute_step(
 
     if is_shell and step.run == "once":
         output, exit_code = _execute_shell_once(step, context, job_id)
-        step_ctx["output"]    = output
-        step_ctx["exit_code"] = exit_code
-        _store_step_output(job_id, step.name, host=None,
-                           output=output, exit_code=exit_code)
         if exit_code != 0:
-            raise _JobAbortError(
-                f"shell/once step '{step.name}' failed with exit code "
-                f"{exit_code}:\n{output[-500:]}"
+            # Run rollback steps if configured
+            rb_out = ""
+            if step.on_error.rollback_steps:
+                rb_out = _execute_rollback(
+                    step.on_error.rollback_steps, context, job_id, options
+                )
+            full_output = output + (f"\n\n--- Rollback ---\n{rb_out}" if rb_out else "")
+            step_ctx["output"]    = full_output
+            step_ctx["exit_code"] = exit_code
+            _store_step_output(job_id, step.name, host=None,
+                               output=full_output, exit_code=exit_code)
+            action  = step.on_error.action
+            failure = step.on_error.message or (
+                f"shell/once step '{step.name}' failed (exit {exit_code})"
             )
+            if action == "continue":
+                log.warning("step_failed_continue", job_id=job_id,
+                            step=step.name, exit_code=exit_code)
+            else:
+                # "stop" and "rollback" both abort — rollback already ran above
+                raise _JobAbortError(f"{failure}:\n{output[-500:]}")
+        else:
+            step_ctx["output"]    = output
+            step_ctx["exit_code"] = exit_code
+            _store_step_output(job_id, step.name, host=None,
+                               output=output, exit_code=exit_code)
 
     elif is_shell and step.run == "per_device":
         active = [d for d in devices
@@ -187,6 +205,7 @@ def _execute_step(
             _execute_shell_per_device,
             active, step, context, job_id, options,
         )
+        failed_entries: list[DeviceEntry] = []
         for host, (out, code) in results.items():
             skipped = (code == _SKIP_CODE)
             actual  = 0 if skipped else code
@@ -194,7 +213,22 @@ def _execute_step(
                                          "skipped": skipped}
             _store_step_output(job_id, step.name, host=host, output=out, exit_code=actual)
             if not skipped and actual != 0:
-                context["failed_devices"].add(host)
+                if step.on_error.action == "continue":
+                    pass   # keep device active for subsequent steps
+                else:
+                    context["failed_devices"].add(host)
+                    failed_entries.extend(d for d in active
+                                          if (d.host or f"[group:{d.group}]") == host)
+        # Run rollback against the devices that failed
+        if failed_entries and step.on_error.rollback_steps:
+            rb_out = _execute_rollback(
+                step.on_error.rollback_steps, context, job_id, options,
+                failed_devices=failed_entries,
+            )
+            for d in failed_entries:
+                h = d.host or f"[group:{d.group}]"
+                if h in step_ctx["devices"]:
+                    step_ctx["devices"][h]["output"] += f"\n\n--- Rollback ---\n{rb_out}"
         _rollup_output(step_ctx)
 
     else:
@@ -206,6 +240,7 @@ def _execute_step(
             _execute_device_step,
             active, step, context, job_id, options,
         )
+        failed_entries = []
         for host, (out, code) in results.items():
             skipped = (code == _SKIP_CODE)
             actual  = 0 if skipped else code
@@ -213,9 +248,24 @@ def _execute_step(
                                          "skipped": skipped}
             _store_step_output(job_id, step.name, host=host, output=out, exit_code=actual)
             if not skipped and actual != 0:
-                context["failed_devices"].add(host)
+                if step.on_error.action == "continue":
+                    pass   # keep device active for subsequent steps
+                else:
+                    context["failed_devices"].add(host)
+                    failed_entries.extend(d for d in active
+                                          if (d.host or f"[group:{d.group}]") == host)
             if not skipped:
                 _update_device_result(job_id, host, step, out, actual)
+        # Run rollback against the devices that failed
+        if failed_entries and step.on_error.rollback_steps:
+            rb_out = _execute_rollback(
+                step.on_error.rollback_steps, context, job_id, options,
+                failed_devices=failed_entries,
+            )
+            for d in failed_entries:
+                h = d.host or f"[group:{d.group}]"
+                if h in step_ctx["devices"]:
+                    step_ctx["devices"][h]["output"] += f"\n\n--- Rollback ---\n{rb_out}"
         _rollup_output(step_ctx)
 
     # ── register: — apply after all output is collected and rolled up
@@ -248,6 +298,53 @@ def _fan_out(fn, devices, step, context, job_id, options) -> dict:
                 out, code = str(e), 1
             results[host] = (out, code)
     return results
+
+
+def _execute_rollback(
+    rollback_steps: list,
+    context: dict,
+    job_id: str,
+    options,
+    failed_devices: Optional[list] = None,
+) -> str:
+    """
+    Execute rollback steps after a step failure and return combined output.
+
+    ``failed_devices`` is the list of DeviceEntry objects that failed.
+    If None (shell/once parent), rollback shell steps run once; device
+    rollback steps are skipped (no target).
+    If provided, device-scoped rollback steps run against those devices.
+
+    Rollback steps never abort the job themselves — all errors are captured
+    in the output and execution continues through all rollback steps.
+    """
+    output_parts: list[str] = []
+    for rb in rollback_steps:
+        label = f"[rollback: {rb.name}]"
+        try:
+            is_shell = rb.type in ("shell", "run_shell_script_locally")
+            if is_shell and rb.run == "once":
+                out, code = _execute_shell_once(rb, context, job_id)
+                output_parts.append(f"{label}\n{out}")
+            elif is_shell and rb.run == "per_device" and failed_devices:
+                results = _fan_out(
+                    _execute_shell_per_device,
+                    failed_devices, rb, context, job_id, options,
+                )
+                for host, (out, code) in results.items():
+                    output_parts.append(f"{label} [{host}]\n{out}")
+            elif not is_shell and failed_devices:
+                results = _fan_out(
+                    _execute_device_step,
+                    failed_devices, rb, context, job_id, options,
+                )
+                for host, (out, code) in results.items():
+                    output_parts.append(f"{label} [{host}]\n{out}")
+            else:
+                output_parts.append(f"{label} skipped — no matching devices")
+        except Exception as e:
+            output_parts.append(f"{label} ERROR: {e}")
+    return "\n\n".join(output_parts)
 
 
 def _evaluate_when(condition: str, context: dict, host: Optional[str] = None) -> bool:
