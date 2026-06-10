@@ -1,5 +1,5 @@
 """
-core/job_store.py — Thread-safe job registry backed by SQLite.
+core/job_store.py — Thread-safe job registry backed by PostgreSQL.
 
 Drop-in replacement for the previous in-memory + JSON implementation.
 All public methods have identical signatures so no other file needs changing.
@@ -7,7 +7,7 @@ All public methods have identical signatures so no other file needs changing.
 What changed from original
 ──────────────────────────
 Before: self._jobs dict (in-memory) + JSON files written on every mutation
-After:  SQLite DB via core.db.db  + JSON files kept as downloadable exports
+After:  PostgreSQL via core.db.db  + JSON files kept as downloadable exports
 
 New in workflow branch
 ──────────────────────
@@ -233,7 +233,7 @@ class JobStore:
         return db.count_jobs(status_filter=status_filter, mode_filter=mode_filter)
 
     def log_path(self, job_id: str) -> Optional[Path]:
-        row = db.query_one("SELECT incident FROM jobs WHERE job_id=?", (job_id,))
+        row = db.query_one("SELECT incident FROM jobs WHERE job_id=%s", (job_id,))
         incident = row["incident"] if row else None
         if incident:
             p = logging_cfg.log_dir / incident / f"{job_id}.json"

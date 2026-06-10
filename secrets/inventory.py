@@ -28,6 +28,7 @@ Public interface:
 from __future__ import annotations
 
 import configparser
+import logging
 import threading
 from pathlib import Path
 from typing import Optional
@@ -35,13 +36,18 @@ from typing import Optional
 from drivers.base import DeviceCredentials
 from core.config import inventory as inventory_cfg
 
+log = logging.getLogger("secrets.inventory")
+
 
 def _inventory_files() -> list[Path]:
     """Collect all .ini files to parse. Supports single-file and directory layouts."""
     p = Path(inventory_cfg.path)
     if p.is_file():
         return [p]
-    return sorted(p.glob("*.ini"))
+    files = sorted(p.glob("*.ini"))
+    if not files:
+        raise FileNotFoundError(f"Inventory directory '{p}' contains no *.ini files.")
+    return files
 
 
 class _ParsedInventory:
@@ -216,6 +222,11 @@ class InventoryClient:
                     port=port,
                 )
 
+                if host_key in inv.by_host:
+                    log.warning(
+                        "duplicate host %s in %s — last file wins",
+                        host_key, filepath.name,
+                    )
                 inv.by_host[host_key] = creds
                 group_members.append(creds)
 

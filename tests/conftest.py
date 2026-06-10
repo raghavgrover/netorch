@@ -95,7 +95,12 @@ requests_per_minute = 1000
 job_submissions_per_minute = 100
 
 [database]
-db_path = "{_tmp_dir}/netorch_test.db"
+type     = "postgresql"
+host     = "localhost"
+port     = 5432
+dbname   = "netorch_test"
+user     = "netorch"
+password = "netorch_db_pass"
 
 [vault]
 type = "none"
@@ -113,6 +118,15 @@ from fastapi.testclient import TestClient  # noqa: E402
 from main import app                        # noqa: E402
 from secrets.inventory import inventory_client  # noqa: E402
 from secrets.provider import reload_provider  # noqa: E402
+from core.db import db                      # noqa: E402
+
+# Wipe the test database so hardcoded job IDs never collide across runs.
+# PostgreSQL persists between runs unlike the old SQLite temp-file approach.
+for _tbl in ("commands", "devices", "workflow_step_outputs", "workflow_logs", "jobs"):
+    try:
+        db.execute(f"TRUNCATE TABLE {_tbl} CASCADE", ())
+    except Exception:
+        pass
 
 # Force inventory to re-read from the test path
 # (in case a previous test session cached a different path)

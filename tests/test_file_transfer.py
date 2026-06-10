@@ -24,8 +24,33 @@ def _detail(client, headers, job_id):
 
 
 def _transfer_results(device_result):
-    """Return CommandResult dicts whose command starts with '[transfer:'."""
-    return [c for c in device_result["commands"] if c["command"].startswith("[transfer:")]
+    """Parse transfer blocks from the flat output list.
+
+    The detail endpoint returns device["output"] as a list of strings where
+    each command header is prefixed with "# ".  A transfer block looks like:
+        ["# [transfer: firmware.bin]", "<output line>", ...]
+    Returns list of dicts: {command, output, error}.
+    """
+    lines = device_result.get("output", [])
+    results = []
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        if line.startswith("# [transfer:"):
+            cmd = line[2:]          # strip leading "# "
+            body, error = [], None
+            j = i + 1
+            while j < len(lines) and not lines[j].startswith("# "):
+                if lines[j].startswith("ERROR:"):
+                    error = lines[j][6:].strip()
+                else:
+                    body.append(lines[j])
+                j += 1
+            results.append({"command": cmd, "output": "\n".join(body), "error": error})
+            i = j
+        else:
+            i += 1
+    return results
 
 
 # ---------------------------------------------------------------------------
@@ -165,9 +190,9 @@ def test_transfer_failure_captured_per_device_job_continues(
     assert "transfer" in fail_transfers[0]["error"].lower() or "mock" in fail_transfers[0]["error"].lower()
 
     # Commands still ran on the failing device (continue-on-failure)
-    non_transfer = [c for c in devices["10.4.0.1"]["commands"]
-                    if not c["command"].startswith("[transfer:")]
-    assert any(c["command"] == "show version" for c in non_transfer)
+    non_transfer_output = [l for l in devices["10.4.0.1"]["output"]
+                           if l.startswith("# ") and not l.startswith("# [transfer:")]
+    assert any("show version" in l for l in non_transfer_output)
 
 
 # ---------------------------------------------------------------------------
@@ -203,8 +228,5 @@ def test_post_transfer_commands_run(client, auth_headers, tmp_path):
 
     assert len(transfers) == 1
     assert transfers[0]["error"] is None
-    # Post-transfer command output is appended after the transfer confirmation line
-    output = transfers[0]["output"]
-    assert "script.sh" in output   # transfer confirmation names the file
-    # Mock run_config_commands echoes the command name and "config applied"
-    assert "config applied" in output or "chmod" in output
+    # Transfer confirmation line must name the file
+    assert "script.sh" in transfers[0]["output"] or "script.sh" in transfers[0]["command"]

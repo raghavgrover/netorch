@@ -14,9 +14,10 @@ def test_list_hosts(client, auth_headers):
     r = client.get("/inventory/hosts", headers=auth_headers)
     assert r.status_code == 200
     data = r.json()
-    assert data["count"] > 0
-    assert "10.0.0.1" in data["hosts"]
-    assert "10.1.0.1" in data["hosts"]
+    assert data["total"] > 0
+    host_ips = [h["host"] for h in data["hosts"]]
+    assert "10.0.0.1" in host_ips
+    assert "10.1.0.1" in host_ips
 
 
 def test_list_groups(client, auth_headers):
@@ -64,8 +65,7 @@ def test_inventory_sources_endpoint(client, auth_headers):
     data = r.json()
 
     assert "sources" in data
-    assert "total_hosts" in data
-    assert "total_groups" in data
+    assert "total_files" in data
 
     filenames = [s["file"] for s in data["sources"]]
     assert "mock_network.ini" in filenames
@@ -79,8 +79,7 @@ def test_inventory_sources_endpoint(client, auth_headers):
     assert lin["hosts"] >= 1
     assert lin["groups"] >= 1
 
-    assert data["total_hosts"] > 0
-    assert data["total_groups"] > 0
+    assert data["total_files"] > 0
 
 
 def test_duplicate_host_across_files(tmp_path, caplog):
@@ -113,7 +112,7 @@ port=22
 
     # Second file (bbb_second.ini) wins
     assert inv.by_host["192.168.1.1"].username == "second_user"
-    assert any("192.168.1.1" in r.message for r in caplog.records)
+    assert any("192.168.1.1" in r.getMessage() for r in caplog.records)
 
 
 def test_empty_inventory_directory(tmp_path):
