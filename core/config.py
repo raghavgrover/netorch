@@ -80,6 +80,16 @@ class RateLimitConfig:
         self.job_submissions_per_minute:int = raw["ratelimit"]["job_submissions_per_minute"]
 
 
+class PSIRTConfig:
+    """Reads the optional [psirt] section from netorch.toml."""
+    def __init__(self, raw: dict):
+        p = raw.get("psirt", {})
+        self.client_id:     str = p.get("client_id", "")
+        self.client_secret: str = p.get("client_secret", "")
+        self.cache_ttl:     int = int(p.get("cache_ttl", 86400))  # seconds
+        self.enabled:       bool = bool(self.client_id and self.client_secret)
+
+
 class BigFixConfig:
     """Reads the optional [bigfix] section from netorch.toml."""
     def __init__(self, raw: dict):
@@ -123,8 +133,9 @@ def _build_all():
     _ratelimit   = RateLimitConfig(raw)
     _database    = DatabaseConfig(raw, config_path)   # config_path kept for compat
     _bigfix      = BigFixConfig(raw)
+    _psirt       = PSIRTConfig(raw)
     _logging.log_dir.mkdir(parents=True, exist_ok=True)
-    return _server, _executor, _inventory, _logging, _ratelimit, _database, _bigfix
+    return _server, _executor, _inventory, _logging, _ratelimit, _database, _bigfix, _psirt
 
 
-server, executor, inventory, logging_cfg, ratelimit, database, bigfix = _build_all()
+server, executor, inventory, logging_cfg, ratelimit, database, bigfix, psirt = _build_all()

@@ -93,6 +93,72 @@ _SCHEMA_STATEMENTS = [
     "CREATE INDEX IF NOT EXISTS idx_wfsteps_job ON workflow_step_outputs(job_id)",
 ]
 
+# ── Vulnerability / Compliance schema ────────────────────────────────────────
+
+_VULN_SCHEMA_STATEMENTS = [
+    """
+    CREATE TABLE IF NOT EXISTS vuln_scans (
+        scan_id      TEXT PRIMARY KEY,
+        status       TEXT NOT NULL DEFAULT 'queued',
+        incident     TEXT,
+        triggered_by TEXT,
+        device_count INTEGER NOT NULL DEFAULT 0,
+        started_at   TEXT,
+        completed_at TEXT,
+        error        TEXT
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_vscans_status ON vuln_scans(status)",
+    "CREATE INDEX IF NOT EXISTS idx_vscans_started ON vuln_scans(started_at)",
+    """
+    CREATE TABLE IF NOT EXISTS vuln_device_facts (
+        scan_id      TEXT NOT NULL,
+        host         TEXT NOT NULL,
+        platform     TEXT,
+        ostype       TEXT,
+        version      TEXT,
+        raw_output   TEXT,
+        status       TEXT NOT NULL DEFAULT 'pending',
+        error        TEXT,
+        collected_at TEXT,
+        PRIMARY KEY (scan_id, host)
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_vdevice_scan ON vuln_device_facts(scan_id)",
+    """
+    CREATE TABLE IF NOT EXISTS vuln_advisories (
+        advisory_id TEXT NOT NULL,
+        ostype      TEXT NOT NULL,
+        version     TEXT NOT NULL,
+        cvss_score  REAL,
+        severity    TEXT,
+        title       TEXT,
+        summary     TEXT,
+        cve_list    TEXT,
+        first_fixed TEXT,
+        pub_url     TEXT,
+        fetched_at  TEXT NOT NULL,
+        PRIMARY KEY (advisory_id, ostype, version)
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_vadvisory_ver ON vuln_advisories(ostype, version)",
+    """
+    CREATE TABLE IF NOT EXISTS vuln_findings (
+        id                 BIGSERIAL PRIMARY KEY,
+        scan_id            TEXT NOT NULL,
+        host               TEXT NOT NULL,
+        advisory_id        TEXT NOT NULL,
+        ostype             TEXT NOT NULL,
+        version            TEXT NOT NULL,
+        first_seen_scan_id TEXT,
+        UNIQUE (scan_id, host, advisory_id)
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_vfindings_scan    ON vuln_findings(scan_id)",
+    "CREATE INDEX IF NOT EXISTS idx_vfindings_host    ON vuln_findings(scan_id, host)",
+    "CREATE INDEX IF NOT EXISTS idx_vfindings_advisory ON vuln_findings(advisory_id)",
+]
+
 # Runtime migrations — safely add columns that may not exist yet
 _MIGRATIONS = [
     "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS incident TEXT",
@@ -140,6 +206,8 @@ class Database:
             with conn:
                 with conn.cursor() as cur:
                     for stmt in _SCHEMA_STATEMENTS:
+                        cur.execute(stmt)
+                    for stmt in _VULN_SCHEMA_STATEMENTS:
                         cur.execute(stmt)
                     for mig in _MIGRATIONS:
                         cur.execute(mig)
@@ -381,6 +449,177 @@ class Database:
         failed  = row["failed"] or 0
         return {"total": total, "success": success, "failed": failed,
                 "in_progress": max(0, total - success - failed)}
+
+
+    # ── Vuln scan write operations ────────────────────────────────────────────
+
+    def create_vuln_scan(self, scan_id: str, device_count: int,
+                         incident: Optional[str], triggered_by: str) -> None:
+        self.execute(
+            "INSERT INTO vuln_scans (scan_id, status, incident, triggered_by, device_count) "
+            "VALUES (%s,'queued',%s,%s,%s)",
+            (scan_id, incident, triggered_by, device_count),
+        )
+
+    def mark_vuln_scan_running(self, scan_id: str, started_at: str) -> None:
+        self.execute(
+            "UPDATE vuln_scans SET status='running', started_at=%s WHERE scan_id=%s",
+            (started_at, scan_id),
+        )
+
+    def mark_vuln_scan_complete(self, scan_id: str, status: str, completed_at: str) -> None:
+        self.execute(
+            "UPDATE vuln_scans SET status=%s, completed_at=%s WHERE scan_id=%s",
+            (status, completed_at, scan_id),
+        )
+
+    def mark_vuln_scan_failed(self, scan_id: str, completed_at: str, error: str) -> None:
+        self.execute(
+            "UPDATE vuln_scans SET status='failed', completed_at=%s, error=%s WHERE scan_id=%s",
+            (completed_at, error, scan_id),
+        )
+
+    def upsert_vuln_device_fact(self, scan_id: str, host: str, platform: str,
+                                ostype: Optional[str], version: Optional[str],
+                                raw_output: Optional[str], status: str,
+                                error: Optional[str], collected_at: str) -> None:
+        self.execute(
+            """INSERT INTO vuln_device_facts
+                   (scan_id, host, platform, ostype, version, raw_output, status, error, collected_at)
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
+               ON CONFLICT (scan_id, host) DO UPDATE SET
+                   platform=EXCLUDED.platform, ostype=EXCLUDED.ostype,
+                   version=EXCLUDED.version, raw_output=EXCLUDED.raw_output,
+                   status=EXCLUDED.status, error=EXCLUDED.error,
+                   collected_at=EXCLUDED.collected_at""",
+            (scan_id, host, platform, ostype, version, raw_output, status, error, collected_at),
+        )
+
+    def upsert_vuln_advisory(self, advisory_id: str, ostype: str, version: str,
+                             cvss_score: Optional[float], severity: Optional[str],
+                             title: Optional[str], summary: Optional[str],
+                             cve_list: str, first_fixed: str,
+                             pub_url: Optional[str], fetched_at: str) -> None:
+        self.execute(
+            """INSERT INTO vuln_advisories
+                   (advisory_id, ostype, version, cvss_score, severity, title,
+                    summary, cve_list, first_fixed, pub_url, fetched_at)
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+               ON CONFLICT (advisory_id, ostype, version) DO UPDATE SET
+                   cvss_score=EXCLUDED.cvss_score, severity=EXCLUDED.severity,
+                   title=EXCLUDED.title, summary=EXCLUDED.summary,
+                   cve_list=EXCLUDED.cve_list, first_fixed=EXCLUDED.first_fixed,
+                   pub_url=EXCLUDED.pub_url, fetched_at=EXCLUDED.fetched_at""",
+            (advisory_id, ostype, version, cvss_score, severity, title,
+             summary, cve_list, first_fixed, pub_url, fetched_at),
+        )
+
+    def insert_vuln_finding(self, scan_id: str, host: str, advisory_id: str,
+                            ostype: str, version: str,
+                            first_seen_scan_id: Optional[str]) -> None:
+        self.execute(
+            """INSERT INTO vuln_findings
+                   (scan_id, host, advisory_id, ostype, version, first_seen_scan_id)
+               VALUES (%s,%s,%s,%s,%s,%s)
+               ON CONFLICT (scan_id, host, advisory_id) DO NOTHING""",
+            (scan_id, host, advisory_id, ostype, version, first_seen_scan_id),
+        )
+
+    # ── Vuln scan read operations ─────────────────────────────────────────────
+
+    def get_vuln_scan(self, scan_id: str) -> Optional[_Row]:
+        return self.query_one("SELECT * FROM vuln_scans WHERE scan_id=%s", (scan_id,))
+
+    def list_vuln_scans(self, limit: int = 50, offset: int = 0) -> list[_Row]:
+        return self.query(
+            "SELECT * FROM vuln_scans ORDER BY started_at DESC NULLS LAST LIMIT %s OFFSET %s",
+            (limit, offset),
+        )
+
+    def count_vuln_scans(self) -> int:
+        row = self.query_one("SELECT COUNT(*) AS n FROM vuln_scans")
+        return row["n"] if row else 0
+
+    def get_vuln_device_facts(self, scan_id: str) -> list[_Row]:
+        return self.query(
+            "SELECT * FROM vuln_device_facts WHERE scan_id=%s ORDER BY host",
+            (scan_id,),
+        )
+
+    def get_cached_advisories(self, ostype: str, version: str,
+                              max_age_seconds: int) -> list[_Row]:
+        """Return cached advisories for (ostype, version) if fetched_at is recent enough."""
+        from datetime import datetime, timezone, timedelta
+        cutoff = (datetime.now(timezone.utc) - timedelta(seconds=max_age_seconds)).isoformat()
+        return self.query(
+            "SELECT * FROM vuln_advisories WHERE ostype=%s AND version=%s AND fetched_at>%s",
+            (ostype, version, cutoff),
+        )
+
+    def get_vuln_findings_with_advisories(self, scan_id: str) -> list[_Row]:
+        return self.query(
+            """SELECT f.host, f.advisory_id, f.ostype, f.version, f.first_seen_scan_id,
+                      a.cvss_score, a.severity, a.title, a.summary,
+                      a.cve_list, a.first_fixed, a.pub_url
+               FROM vuln_findings f
+               JOIN vuln_advisories a
+                 ON a.advisory_id=f.advisory_id AND a.ostype=f.ostype AND a.version=f.version
+               WHERE f.scan_id=%s
+               ORDER BY f.host, a.cvss_score DESC NULLS LAST""",
+            (scan_id,),
+        )
+
+    def get_first_seen_scan(self, host: str, advisory_id: str) -> Optional[str]:
+        """Return the earliest scan_id that recorded this finding."""
+        row = self.query_one(
+            """SELECT f.scan_id FROM vuln_findings f
+               JOIN vuln_scans s ON s.scan_id=f.scan_id
+               WHERE f.host=%s AND f.advisory_id=%s
+               ORDER BY s.started_at ASC NULLS LAST LIMIT 1""",
+            (host, advisory_id),
+        )
+        return row["scan_id"] if row else None
+
+    def list_vuln_advisories(self, ostype: Optional[str] = None,
+                             severity: Optional[str] = None,
+                             limit: int = 200, offset: int = 0) -> list[_Row]:
+        """Return cached advisories, optionally filtered by ostype and/or severity."""
+        conditions = []
+        params: list = []
+        if ostype:
+            conditions.append("ostype=%s")
+            params.append(ostype)
+        if severity:
+            conditions.append("severity=%s")
+            params.append(severity)
+        where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+        params.extend([limit, offset])
+        return self.query(
+            f"SELECT * FROM vuln_advisories {where} "
+            f"ORDER BY cvss_score DESC NULLS LAST LIMIT %s OFFSET %s",
+            tuple(params),
+        )
+
+    def get_vuln_scan_summary(self, scan_id: str) -> dict:
+        """Counts of findings by severity for a scan."""
+        row = self.query_one(
+            """SELECT
+               COUNT(DISTINCT f.host) AS devices_with_findings,
+               COUNT(CASE WHEN a.severity='Critical'      THEN 1 END) AS critical,
+               COUNT(CASE WHEN a.severity='High'          THEN 1 END) AS high,
+               COUNT(CASE WHEN a.severity='Medium'        THEN 1 END) AS medium,
+               COUNT(CASE WHEN a.severity='Low'           THEN 1 END) AS low,
+               COUNT(CASE WHEN a.severity='Informational' THEN 1 END) AS informational
+               FROM vuln_findings f
+               JOIN vuln_advisories a
+                 ON a.advisory_id=f.advisory_id AND a.ostype=f.ostype AND a.version=f.version
+               WHERE f.scan_id=%s""",
+            (scan_id,),
+        )
+        if not row:
+            return {"devices_with_findings": 0, "critical": 0, "high": 0,
+                    "medium": 0, "low": 0, "informational": 0}
+        return dict(row)
 
 
 # ── Module singleton ──────────────────────────────────────────────────────────

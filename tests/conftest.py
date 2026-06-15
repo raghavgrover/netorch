@@ -122,7 +122,10 @@ from core.db import db                      # noqa: E402
 
 # Wipe the test database so hardcoded job IDs never collide across runs.
 # PostgreSQL persists between runs unlike the old SQLite temp-file approach.
-for _tbl in ("commands", "devices", "workflow_step_outputs", "workflow_logs", "jobs"):
+for _tbl in (
+    "commands", "devices", "workflow_step_outputs", "workflow_logs", "jobs",
+    "vuln_findings", "vuln_device_facts", "vuln_advisories", "vuln_scans",
+):
     try:
         db.execute(f"TRUNCATE TABLE {_tbl} CASCADE", ())
     except Exception:
