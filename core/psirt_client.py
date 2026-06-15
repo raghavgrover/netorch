@@ -37,11 +37,10 @@ _API_BASE  = "https://apix.cisco.com/security/advisories/v2"
 
 # Supported PSIRT ostypes — maps from netorch platform key
 PLATFORM_TO_OSTYPE: dict[str, str] = {
-    "cisco_ios":   "iosxe",
-    "cisco_xe":    "iosxe",
+    "cisco_ios":   "ios",    # classic IOS (12.x, 15.x T/S/M trains)
+    "cisco_xe":    "iosxe",  # IOS-XE (16.x, 17.x)
     "cisco_xr":    "xr",
     "cisco_nxos":  "nxos",
-    "cisco_wlc":   "wlc",    # AireOS — limited PSIRT coverage
 }
 
 SUPPORTED_OSTYPES = {"ios", "iosxe", "xr", "nxos", "asa", "ftd"}
@@ -166,6 +165,10 @@ def _api_get(path: str, token: str) -> dict:
             raise PSIRTRateLimitError(f"PSIRT rate limit: {body}")
         if e.code in (401, 403):
             raise PSIRTAuthError(f"PSIRT auth error {e.code}: {body}")
+        # 404 = no advisories for this version; 406 = version not in PSIRT DB
+        # Both are valid "no data" responses, not errors.
+        if e.code in (404, 406):
+            return {"advisories": []}
         raise PSIRTAPIError(f"PSIRT HTTP {e.code}: {body}")
     except Exception as e:
         raise PSIRTAPIError(f"PSIRT request error: {e}")
